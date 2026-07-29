@@ -3,7 +3,12 @@ import { sql } from '../db/client';
 import { normalizeEmail, normalizeName, normalizePhone } from '../domain/normalize';
 import { assertCanAccessAcademy, hasAnyRole, requireAuth } from '../http/auth';
 import { badRequest, conflict, forbidden, notFound } from '../http/errors';
-import { attendanceEventInputSchema, attendanceInputSchema } from '../http/schemas';
+import {
+	attendanceEventInputSchema,
+	attendanceInputSchema,
+	attendancePatchSchema,
+	leadPatchSchema
+} from '../http/schemas';
 import type { AppBindings } from '../http/types';
 import { audit } from '../services/audit';
 
@@ -27,8 +32,8 @@ attendanceRoutes.get('/leads/duplicates', async (c) => {
 	const exact = await sql`
 		SELECT *
 		FROM "gym-conversion-tracker"."leads"
-		WHERE (${phone?.e164 ?? null} IS NOT NULL AND "whatsapp_e164" = ${phone?.e164 ?? null})
-			OR (${email ?? null} IS NOT NULL AND "email" = ${email})
+		WHERE (${phone?.e164 ?? null}::text IS NOT NULL AND "whatsapp_e164" = ${phone?.e164 ?? null})
+			OR (${email ?? null}::text IS NOT NULL AND "email" = ${email})
 		LIMIT 10
 	`;
 
@@ -55,13 +60,13 @@ attendanceRoutes.get('/attendances', async (c) => {
 
 	const rows = hasAnyRole(user, ['ADMIN', 'SOCIO', 'GERENTE_REGIONAL', 'LIDER'])
 		? await sql`
-			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", p."name" AS professor_name, u."name" AS receptionist_name
+			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name
 			FROM "gym-conversion-tracker"."attendances" a
 			JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
 			JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
 			LEFT JOIN "gym-conversion-tracker"."professors" p ON p."id" = a."professor_id"
-			WHERE (${academyId ?? null} IS NULL OR a."academy_id" = ${academyId ?? null})
-				AND (${status ?? null} IS NULL OR a."status" = ${status ?? null})
+			WHERE (${academyId ?? null}::text IS NULL OR a."academy_id" = ${academyId ?? null})
+				AND (${status ?? null}::text IS NULL OR a."status" = ${status ?? null})
 				AND (
 					${hasAnyRole(user, ['ADMIN', 'SOCIO'])} = true OR
 					a."academy_id" IN (
@@ -73,14 +78,14 @@ attendanceRoutes.get('/attendances', async (c) => {
 			LIMIT 200
 		`
 		: await sql`
-			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", p."name" AS professor_name, u."name" AS receptionist_name
+			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name
 			FROM "gym-conversion-tracker"."attendances" a
 			JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
 			JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
 			LEFT JOIN "gym-conversion-tracker"."professors" p ON p."id" = a."professor_id"
 			WHERE a."receptionist_id" = ${user.id}
-				AND (${academyId ?? null} IS NULL OR a."academy_id" = ${academyId ?? null})
-				AND (${status ?? null} IS NULL OR a."status" = ${status ?? null})
+				AND (${academyId ?? null}::text IS NULL OR a."academy_id" = ${academyId ?? null})
+				AND (${status ?? null}::text IS NULL OR a."status" = ${status ?? null})
 			ORDER BY a."started_at" DESC
 			LIMIT 200
 		`;
@@ -96,15 +101,15 @@ attendanceRoutes.post('/attendances', async (c) => {
 		throw badRequest('Selecione o professor que apresentou a academia.');
 	}
 
-	const phone = normalizePhone(input.lead.phone);
+	const phone = input.lead.phone?.number ? normalizePhone(input.lead.phone) : null;
 	const email = normalizeEmail(input.lead.email);
 
-	if (!input.leadId) {
+	if (!input.leadId && (phone || email)) {
 		const [duplicate] = await sql`
 			SELECT "id", "name", "whatsapp_e164", "email"
 			FROM "gym-conversion-tracker"."leads"
-			WHERE "whatsapp_e164" = ${phone.e164}
-				OR (${email} IS NOT NULL AND "email" = ${email})
+			WHERE (${phone?.e164 ?? null}::text IS NOT NULL AND "whatsapp_e164" = ${phone?.e164 ?? null})
+				OR (${email}::text IS NOT NULL AND "email" = ${email})
 			LIMIT 1
 		`;
 		if (duplicate) throw conflict('Provável duplicidade encontrada. Use o lead existente ou revise o atendimento.', duplicate);
@@ -116,7 +121,7 @@ attendanceRoutes.post('/attendances', async (c) => {
 			: await tx<Array<{ id: string }>>`
 				INSERT INTO "gym-conversion-tracker"."leads"
 					("name", "normalized_name", "email", "whatsapp_country_code", "whatsapp_area_code", "whatsapp_number", "whatsapp_e164", "notes")
-				VALUES (${input.lead.name}, ${normalizeName(input.lead.name)}, ${email}, ${phone.countryCode}, ${phone.areaCode}, ${phone.number}, ${phone.e164}, ${input.lead.notes ?? null})
+				VALUES (${input.lead.name}, ${normalizeName(input.lead.name)}, ${email}, ${phone?.countryCode ?? '55'}, ${phone?.areaCode ?? '16'}, ${phone?.number ?? null}, ${phone?.e164 ?? null}, ${input.lead.notes ?? null})
 				RETURNING "id"
 			`;
 		if (!lead) throw notFound('Lead não encontrado.');
@@ -171,6 +176,124 @@ attendanceRoutes.get('/attendances/:id', async (c) => {
 		WHERE al."attendance_id" = ${id}
 	`;
 	return c.json({ attendance, events, sales, losses });
+});
+
+attendanceRoutes.patch('/attendances/:id', async (c) => {
+	const user = c.get('user');
+	const id = c.req.param('id');
+	const input = attendancePatchSchema.parse(await c.req.json());
+
+	const [attendance] = await sql<
+		Array<{ id: string; academy_id: string; receptionist_id: string; professor_id: string | null; presenter: string }>
+	>`
+		SELECT "id", "academy_id", "receptionist_id", "professor_id", "presenter"
+		FROM "gym-conversion-tracker"."attendances"
+		WHERE "id" = ${id}
+	`;
+	if (!attendance) throw notFound();
+	if (attendance.receptionist_id !== user.id) assertCanAccessAcademy(user, attendance.academy_id);
+
+	const updates: Record<string, string | null> = {};
+	if ('professorId' in input) {
+		if (input.professorId) {
+			const [professor] = await sql<Array<{ id: string }>>`
+				SELECT "id" FROM "gym-conversion-tracker"."professors"
+				WHERE "id" = ${input.professorId} AND "academy_id" = ${attendance.academy_id} AND "active" = true
+			`;
+			if (!professor) throw badRequest('Professor inválido para esta academia.');
+		}
+		updates.professor_id = input.professorId ?? null;
+	}
+	const nextPresenter = input.presenter ?? attendance.presenter;
+	const nextProfessorId = 'professor_id' in updates ? updates.professor_id : attendance.professor_id;
+	if (nextPresenter === 'PROFESSOR' && !nextProfessorId) {
+		throw badRequest('Selecione o professor que apresentou a academia.');
+	}
+	if ('presenter' in input) updates.presenter = nextPresenter;
+	if (!Object.keys(updates).length) throw badRequest('Nada para atualizar.');
+
+	const [updated] = await sql`
+		UPDATE "gym-conversion-tracker"."attendances"
+		SET ${sql(updates)}, "updated_at" = now()
+		WHERE "id" = ${id}
+		RETURNING *
+	`;
+
+	await audit({ actorUserId: user.id, action: 'attendance.update', entityType: 'attendance', entityId: id, payload: input, c });
+	return c.json({ attendance: updated });
+});
+
+attendanceRoutes.patch('/leads/:id', async (c) => {
+	const user = c.get('user');
+	const id = c.req.param('id');
+	const input = leadPatchSchema.parse(await c.req.json());
+
+	const [lead] = await sql<Array<{ id: string }>>`
+		SELECT "id" FROM "gym-conversion-tracker"."leads" WHERE "id" = ${id}
+	`;
+	if (!lead) throw notFound('Lead não encontrado.');
+
+	if (!hasAnyRole(user, ['ADMIN', 'SOCIO'])) {
+		const reachable = await sql`
+			SELECT 1
+			FROM "gym-conversion-tracker"."attendances" a
+			WHERE a."lead_id" = ${id}
+				AND (
+					a."receptionist_id" = ${user.id}
+					OR a."academy_id" IN (
+						SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+						WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+					)
+				)
+			LIMIT 1
+		`;
+		if (!reachable.length) throw forbidden('Você não tem acesso a este lead.');
+	}
+
+	const updates: Record<string, string | null> = {};
+	if (input.name) {
+		updates.name = input.name;
+		updates.normalized_name = normalizeName(input.name);
+	}
+	if ('email' in input) updates.email = normalizeEmail(input.email);
+	if ('phone' in input) {
+		if (input.phone === null) {
+			updates.whatsapp_number = null;
+			updates.whatsapp_e164 = null;
+		} else if (input.phone) {
+			const phone = normalizePhone(input.phone);
+			updates.whatsapp_country_code = phone.countryCode;
+			updates.whatsapp_area_code = phone.areaCode;
+			updates.whatsapp_number = phone.number;
+			updates.whatsapp_e164 = phone.e164;
+		}
+	}
+	if ('notes' in input) updates.notes = input.notes ?? null;
+	if (!Object.keys(updates).length) throw badRequest('Nada para atualizar.');
+
+	if (updates.whatsapp_e164 || updates.email) {
+		const [duplicate] = await sql`
+			SELECT "id", "name", "whatsapp_e164", "email"
+			FROM "gym-conversion-tracker"."leads"
+			WHERE "id" <> ${id}
+				AND (
+					(${updates.whatsapp_e164 ?? null}::text IS NOT NULL AND "whatsapp_e164" = ${updates.whatsapp_e164 ?? null})
+					OR (${updates.email ?? null}::text IS NOT NULL AND "email" = ${updates.email ?? null})
+				)
+			LIMIT 1
+		`;
+		if (duplicate) throw conflict('Outro lead já usa este telefone ou email.', duplicate);
+	}
+
+	const [updated] = await sql`
+		UPDATE "gym-conversion-tracker"."leads"
+		SET ${sql(updates)}, "updated_at" = now()
+		WHERE "id" = ${id}
+		RETURNING *
+	`;
+
+	await audit({ actorUserId: user.id, action: 'lead.update', entityType: 'lead', entityId: id, payload: input, c });
+	return c.json({ lead: updated });
 });
 
 attendanceRoutes.post('/attendances/:id/events', async (c) => {

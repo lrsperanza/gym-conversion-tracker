@@ -154,8 +154,8 @@ export const leads = gym.table(
 		email: text('email'),
 		whatsappCountryCode: text('whatsapp_country_code').notNull().default('55'),
 		whatsappAreaCode: text('whatsapp_area_code').notNull().default('16'),
-		whatsappNumber: text('whatsapp_number').notNull(),
-		whatsappE164: text('whatsapp_e164').notNull(),
+		whatsappNumber: text('whatsapp_number'),
+		whatsappE164: text('whatsapp_e164'),
 		notes: text('notes'),
 		createdAt: now,
 		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()

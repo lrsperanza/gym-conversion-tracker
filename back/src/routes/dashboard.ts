@@ -27,7 +27,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 		WITH scoped AS (
 			SELECT a.*
 			FROM "gym-conversion-tracker"."attendances" a
-			WHERE (${filters.academyId ?? null} IS NULL OR a."academy_id" = ${filters.academyId ?? null})
+			WHERE (${filters.academyId ?? null}::text IS NULL OR a."academy_id" = ${filters.academyId ?? null})
 				AND (${from}::timestamptz IS NULL OR a."started_at" >= ${from}::timestamptz)
 				AND (${to}::timestamptz IS NULL OR a."started_at" <= ${to}::timestamptz)
 				AND (${restrictToReceptionist} = false OR a."receptionist_id" = ${user.id})
@@ -50,7 +50,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 		WITH scoped AS (
 			SELECT a.*
 			FROM "gym-conversion-tracker"."attendances" a
-			WHERE (${filters.academyId ?? null} IS NULL OR a."academy_id" = ${filters.academyId ?? null})
+			WHERE (${filters.academyId ?? null}::text IS NULL OR a."academy_id" = ${filters.academyId ?? null})
 				AND (${from}::timestamptz IS NULL OR a."started_at" >= ${from}::timestamptz)
 				AND (${to}::timestamptz IS NULL OR a."started_at" <= ${to}::timestamptz)
 				AND (${restrictToReceptionist} = false OR a."receptionist_id" = ${user.id})
@@ -79,7 +79,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			SELECT a.*
 			FROM "gym-conversion-tracker"."attendances" a
 			WHERE a."professor_id" IS NOT NULL
-				AND (${filters.academyId ?? null} IS NULL OR a."academy_id" = ${filters.academyId ?? null})
+				AND (${filters.academyId ?? null}::text IS NULL OR a."academy_id" = ${filters.academyId ?? null})
 				AND (${from}::timestamptz IS NULL OR a."started_at" >= ${from}::timestamptz)
 				AND (${to}::timestamptz IS NULL OR a."started_at" <= ${to}::timestamptz)
 				AND (${restrictToReceptionist} = false OR a."receptionist_id" = ${user.id})
@@ -108,7 +108,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			SELECT a.*
 			FROM "gym-conversion-tracker"."attendances" a
 			WHERE a."professor_id" IS NOT NULL
-				AND (${filters.academyId ?? null} IS NULL OR a."academy_id" = ${filters.academyId ?? null})
+				AND (${filters.academyId ?? null}::text IS NULL OR a."academy_id" = ${filters.academyId ?? null})
 				AND (${from}::timestamptz IS NULL OR a."started_at" >= ${from}::timestamptz)
 				AND (${to}::timestamptz IS NULL OR a."started_at" <= ${to}::timestamptz)
 				AND (${restrictToReceptionist} = false OR a."receptionist_id" = ${user.id})
@@ -149,7 +149,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 		FROM "gym-conversion-tracker"."sales" s
 		JOIN "gym-conversion-tracker"."attendances" a ON a."id" = s."attendance_id"
 		JOIN "gym-conversion-tracker"."users" u ON u."id" = s."sold_by_user_id"
-		WHERE (${filters.academyId ?? null} IS NULL OR a."academy_id" = ${filters.academyId ?? null})
+		WHERE (${filters.academyId ?? null}::text IS NULL OR a."academy_id" = ${filters.academyId ?? null})
 			AND (${from}::timestamptz IS NULL OR s."created_at" >= ${from}::timestamptz)
 			AND (${to}::timestamptz IS NULL OR s."created_at" <= ${to}::timestamptz)
 			AND (${restrictToReceptionist} = false OR s."sold_by_user_id" = ${user.id})
@@ -171,7 +171,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			COALESCE(SUM(s."amount_cents"), 0)::int AS revenue_cents
 		FROM "gym-conversion-tracker"."attendances" a
 		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = a."id"
-		WHERE (${filters.academyId ?? null} IS NULL OR a."academy_id" = ${filters.academyId ?? null})
+		WHERE (${filters.academyId ?? null}::text IS NULL OR a."academy_id" = ${filters.academyId ?? null})
 			AND (${from}::timestamptz IS NULL OR a."started_at" >= ${from}::timestamptz)
 			AND (${to}::timestamptz IS NULL OR a."started_at" <= ${to}::timestamptz)
 			AND (${restrictToReceptionist} = false OR a."receptionist_id" = ${user.id})
@@ -226,7 +226,7 @@ dashboardRoutes.get('/dashboard/audit', async (c) => {
 		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = a."id"
 		LEFT JOIN "gym-conversion-tracker"."attendance_losses" al ON al."attendance_id" = a."id"
 		LEFT JOIN "gym-conversion-tracker"."loss_reasons" lr ON lr."id" = al."loss_reason_id"
-		WHERE (${academyId ?? null} IS NULL OR a."academy_id" = ${academyId ?? null})
+		WHERE (${academyId ?? null}::text IS NULL OR a."academy_id" = ${academyId ?? null})
 			AND (${!isGlobal && !isManager} = false OR a."receptionist_id" = ${user.id})
 			AND (
 				${isGlobal} = true OR a."academy_id" IN (

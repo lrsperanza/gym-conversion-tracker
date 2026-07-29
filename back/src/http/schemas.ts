@@ -78,8 +78,20 @@ export const confirmEmailSchema = z.object({
 export const leadInputSchema = z.object({
 	name: z.string().min(2),
 	email: z.string().email().optional().nullable(),
-	phone: phoneSchema,
+	phone: phoneSchema.optional().nullable(),
 	notes: z.string().optional().nullable()
+});
+
+export const leadPatchSchema = z.object({
+	name: z.string().min(2).optional(),
+	email: z.string().email().optional().nullable(),
+	phone: phoneSchema.optional().nullable(),
+	notes: z.string().optional().nullable()
+});
+
+export const attendancePatchSchema = z.object({
+	professorId: z.string().uuid().optional().nullable(),
+	presenter: z.enum(['RECEPTIONIST', 'PROFESSOR']).optional()
 });
 
 export const attendanceInputSchema = z.object({
