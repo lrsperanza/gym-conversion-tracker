@@ -8,7 +8,6 @@
 	import type { Academy, Attendance, LossReason, OutcomeType, Professor } from '$lib/types';
 	import { onMount } from 'svelte';
 
-	type Presenter = 'RECEPTIONIST' | 'PROFESSOR';
 	type EventType =
 		| 'SALE'
 		| 'LOSS'
@@ -18,27 +17,17 @@
 		| 'OTHER'
 		| 'REOPEN'
 		| 'NOTE';
-	type DuplicateLead = {
-		id: string;
+	type QuickDraft = {
 		name: string;
-		email?: string | null;
-		whatsapp_e164?: string | null;
-		score?: number;
-	};
-	type LeadDraft = {
-		leadId: string;
-		name: string;
-		countryCode: string;
-		areaCode: string;
-		number: string;
-		email: string;
-		notes: string;
 		academyId: string;
-		presenter: Presenter;
-		professorId: string;
+	};
+	type EditingField = 'phone' | 'email' | 'professor';
+	type EditingTarget = {
+		attendanceId: string;
+		field: EditingField;
 	};
 
-	const DRAFT_KEY = 'attendance-draft';
+	const DRAFT_KEY = 'attendance-quick-draft';
 	const eventTypes: Array<{ value: EventType; label: string }> = [
 		{ value: 'NOTE', label: 'Nota' },
 		{ value: 'SALE', label: 'Venda' },
@@ -58,12 +47,12 @@
 	let queue = $state.raw<Attendance[]>([]);
 	let queueLoading = $state(false);
 	let selectedAttendanceId = $state('');
-	let duplicateExact = $state.raw<DuplicateLead[]>([]);
-	let duplicateProbable = $state.raw<DuplicateLead[]>([]);
 	let attendanceMessage = $state('');
 	let attendanceBusy = $state(false);
-	let draftSaveStatus = $state(browser ? 'Rascunho pronto para edição.' : '');
-	let leadDraft = $state<LeadDraft>(createLeadDraft());
+	let quickDraft = $state<QuickDraft>(createQuickDraft());
+	let editing = $state<EditingTarget | null>(null);
+	let editingValue = $state('');
+	let editingBusy = $state(false);
 	let eventForm = $state({
 		type: 'NOTE' as EventType,
 		outcomeTypeId: '',
@@ -74,12 +63,6 @@
 		description: ''
 	});
 	let activeAcademies = $derived(academies.filter((academy) => academy.active));
-	let filteredProfessors = $derived(
-		professors.filter((professor) => {
-			const sameAcademy = !leadDraft.academyId || professor.academy_id === leadDraft.academyId;
-			return sameAcademy && professor.active;
-		})
-	);
 	let activeOutcomeTypes = $derived(outcomeTypes.filter((outcome) => outcome.active));
 	let activeLossReasons = $derived(lossReasons.filter((reason) => reason.active));
 	let selectedAttendance = $derived(
@@ -91,43 +74,34 @@
 	let saleNeedsManual = $derived(
 		!eventForm.outcomeTypeId || Boolean(selectedOutcome?.requires_manual_value)
 	);
+	let pendingCount = $derived(
+		queue.filter(
+			(attendance) =>
+				!attendance.whatsapp_e164 || !attendance.lead_email || !attendance.professor_name
+		).length
+	);
 
 	onMount(() => {
 		void loadReferenceData();
 	});
 
-	function defaultLeadDraft(): LeadDraft {
-		return {
-			leadId: '',
-			name: '',
-			countryCode: '55',
-			areaCode: '16',
-			number: '',
-			email: '',
-			notes: '',
-			academyId: '',
-			presenter: 'RECEPTIONIST',
-			professorId: ''
-		};
+	function defaultQuickDraft(): QuickDraft {
+		return { name: '', academyId: '' };
 	}
 
-	function createLeadDraft() {
-		if (!browser) return defaultLeadDraft();
+	function createQuickDraft() {
+		if (!browser) return defaultQuickDraft();
 		try {
 			const saved = localStorage.getItem(DRAFT_KEY);
-			return saved ? { ...defaultLeadDraft(), ...JSON.parse(saved) } : defaultLeadDraft();
+			return saved ? { ...defaultQuickDraft(), ...JSON.parse(saved) } : defaultQuickDraft();
 		} catch {
-			return defaultLeadDraft();
+			return defaultQuickDraft();
 		}
 	}
 
-	function saveLeadDraft() {
+	function saveQuickDraft() {
 		if (!browser) return;
-		localStorage.setItem(DRAFT_KEY, JSON.stringify(leadDraft));
-		draftSaveStatus = `Rascunho salvo às ${new Intl.DateTimeFormat('pt-BR', {
-			hour: '2-digit',
-			minute: '2-digit'
-		}).format(new Date())}`;
+		localStorage.setItem(DRAFT_KEY, JSON.stringify(quickDraft));
 	}
 
 	async function loadReferenceData() {
@@ -144,7 +118,7 @@
 			professors = professorData.professors;
 			outcomeTypes = outcomeData.outcomeTypes;
 			lossReasons = lossData.lossReasons;
-			if (!leadDraft.academyId && activeAcademies[0]) leadDraft.academyId = activeAcademies[0].id;
+			if (!quickDraft.academyId && activeAcademies[0]) quickDraft.academyId = activeAcademies[0].id;
 			await loadQueue();
 		} catch (error) {
 			attendanceMessage = errorMessage(error);
@@ -157,7 +131,7 @@
 		attendanceMessage = '';
 		try {
 			const data = await api<{ attendances: Attendance[] }>(
-				`/api/attendances${queryString({ academyId: leadDraft.academyId })}`
+				`/api/attendances${queryString({ academyId: quickDraft.academyId })}`
 			);
 			queue = data.attendances;
 			if (!queue.some((attendance) => attendance.id === selectedAttendanceId)) {
@@ -170,25 +144,25 @@
 		}
 	}
 
-	async function checkDuplicates() {
+	async function startAttendance(event: SubmitEvent) {
+		event.preventDefault();
 		attendanceBusy = true;
 		attendanceMessage = '';
 		try {
-			const data = await api<{ exact: DuplicateLead[]; probable: DuplicateLead[] }>(
-				`/api/leads/duplicates${queryString({
-					name: leadDraft.name,
-					email: leadDraft.email,
-					countryCode: leadDraft.countryCode,
-					areaCode: leadDraft.areaCode,
-					phoneNumber: leadDraft.number
-				})}`
-			);
-			duplicateExact = data.exact;
-			duplicateProbable = data.probable;
-			attendanceMessage =
-				data.exact.length || data.probable.length
-					? 'Possíveis duplicidades encontradas.'
-					: 'Nenhuma duplicidade encontrada.';
+			const data = await api<{ attendance: Attendance }>('/api/attendances', {
+				method: 'POST',
+				body: JSON.stringify({
+					academyId: quickDraft.academyId,
+					lead: { name: quickDraft.name.trim() },
+					presenter: 'RECEPTIONIST',
+					status: 'IN_PROGRESS'
+				})
+			});
+			selectedAttendanceId = data.attendance.id;
+			quickDraft.name = '';
+			saveQuickDraft();
+			attendanceMessage = 'Atendimento iniciado. Complete os dados direto na fila quando puder.';
+			await loadQueue();
 		} catch (error) {
 			attendanceMessage = errorMessage(error);
 		} finally {
@@ -196,52 +170,93 @@
 		}
 	}
 
-	function useDuplicate(lead: DuplicateLead) {
-		leadDraft.leadId = lead.id;
-		leadDraft.name = lead.name;
-		leadDraft.email = lead.email ?? '';
-		saveLeadDraft();
-		attendanceMessage = 'Lead existente selecionado para o atendimento.';
+	function professorsForAcademy(academyId: string) {
+		return professors.filter((professor) => professor.academy_id === academyId && professor.active);
 	}
 
-	async function createAttendance(event: SubmitEvent) {
-		event.preventDefault();
-		attendanceBusy = true;
+	function autofocus(node: HTMLElement) {
+		node.focus();
+	}
+
+	function startEdit(attendance: Attendance, field: EditingField) {
+		editing = { attendanceId: attendance.id, field };
+		if (field === 'phone') editingValue = attendance.whatsapp_e164?.replace(/^\+55/, '') ?? '';
+		else if (field === 'email') editingValue = attendance.lead_email ?? '';
+		else editingValue = attendance.professor_id ?? '';
+	}
+
+	function cancelEdit() {
+		editing = null;
+		editingValue = '';
+	}
+
+	function parsePhone(raw: string) {
+		let digits = raw.replace(/\D/g, '');
+		if (digits.startsWith('55') && digits.length >= 12) digits = digits.slice(2);
+		if (digits.length < 10) return null;
+		return { countryCode: '55', areaCode: digits.slice(0, 2), number: digits.slice(2) };
+	}
+
+	async function patchLead(attendance: Attendance, payload: Record<string, unknown>) {
+		await api<{ lead: { id: string } }>(`/api/leads/${attendance.lead_id}`, {
+			method: 'PATCH',
+			body: JSON.stringify(payload)
+		});
+	}
+
+	async function savePhone(attendance: Attendance) {
+		const phone = parsePhone(editingValue);
+		if (!phone) {
+			attendanceMessage = 'Informe DDD + número (ex.: 16999998888).';
+			return;
+		}
+		editingBusy = true;
 		attendanceMessage = '';
 		try {
-			const payload = {
-				academyId: leadDraft.academyId,
-				leadId: leadDraft.leadId || undefined,
-				lead: {
-					name: leadDraft.name,
-					email: leadDraft.email || null,
-					phone: {
-						countryCode: leadDraft.countryCode,
-						areaCode: leadDraft.areaCode,
-						number: leadDraft.number
-					},
-					notes: leadDraft.notes || null
-				},
-				professorId: leadDraft.presenter === 'PROFESSOR' ? leadDraft.professorId || null : null,
-				presenter: leadDraft.presenter,
-				status: 'IN_PROGRESS'
-			};
-			const data = await api<{ attendance: Attendance }>('/api/attendances', {
-				method: 'POST',
-				body: JSON.stringify(payload)
-			});
-			selectedAttendanceId = data.attendance.id;
-			const academyId = leadDraft.academyId;
-			Object.assign(leadDraft, { ...defaultLeadDraft(), academyId });
-			saveLeadDraft();
-			duplicateExact = [];
-			duplicateProbable = [];
-			attendanceMessage = 'Atendimento aberto com sucesso.';
+			await patchLead(attendance, { phone });
+			cancelEdit();
+			attendanceMessage = 'Número salvo.';
 			await loadQueue();
 		} catch (error) {
 			attendanceMessage = errorMessage(error);
 		} finally {
-			attendanceBusy = false;
+			editingBusy = false;
+		}
+	}
+
+	async function saveEmail(attendance: Attendance) {
+		editingBusy = true;
+		attendanceMessage = '';
+		try {
+			await patchLead(attendance, { email: editingValue.trim() || null });
+			cancelEdit();
+			attendanceMessage = 'Email salvo.';
+			await loadQueue();
+		} catch (error) {
+			attendanceMessage = errorMessage(error);
+		} finally {
+			editingBusy = false;
+		}
+	}
+
+	async function saveProfessor(attendance: Attendance) {
+		editingBusy = true;
+		attendanceMessage = '';
+		try {
+			await api<{ attendance: Attendance }>(`/api/attendances/${attendance.id}`, {
+				method: 'PATCH',
+				body: JSON.stringify({
+					professorId: editingValue || null,
+					presenter: editingValue ? 'PROFESSOR' : 'RECEPTIONIST'
+				})
+			});
+			cancelEdit();
+			attendanceMessage = 'Professor atualizado.';
+			await loadQueue();
+		} catch (error) {
+			attendanceMessage = errorMessage(error);
+		} finally {
+			editingBusy = false;
 		}
 	}
 
@@ -315,143 +330,49 @@
 	<div class="space-y-6">
 		<section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
 			<h2 class="text-2xl font-bold text-slate-950">Novo atendimento</h2>
-			<p class="text-slate-600">Campos grandes para abrir a ficha rapidamente na recepção.</p>
+			<p class="text-slate-600">
+				Comece só com o primeiro nome. Número, email e professor ficam pendentes na fila para
+				completar quando puder.
+			</p>
 			<form
 				class="mt-5 grid gap-4"
-				onsubmit={createAttendance}
-				oninput={saveLeadDraft}
-				onchange={saveLeadDraft}
+				onsubmit={startAttendance}
+				oninput={saveQuickDraft}
+				onchange={saveQuickDraft}
 			>
-				<div class="grid gap-4 sm:grid-cols-2">
-					<label class="text-sm font-medium text-slate-700">
-						Nome do lead
-						<input
-							class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-							bind:value={leadDraft.name}
-							required
-						/>
-					</label>
-					<label class="text-sm font-medium text-slate-700">
-						Email opcional
-						<input
-							class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-							type="email"
-							bind:value={leadDraft.email}
-						/>
-					</label>
-				</div>
-				<fieldset class="grid gap-3 sm:grid-cols-[0.6fr_0.6fr_1.8fr]">
-					<legend class="sr-only">WhatsApp</legend>
-					<label class="text-sm font-medium text-slate-700"
-						>País<input
-							class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-							inputmode="numeric"
-							bind:value={leadDraft.countryCode}
-							required
-						/></label
-					>
-					<label class="text-sm font-medium text-slate-700"
-						>DDD<input
-							class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-							inputmode="numeric"
-							bind:value={leadDraft.areaCode}
-							required
-						/></label
-					>
-					<label class="text-sm font-medium text-slate-700"
-						>Número<input
-							class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-							inputmode="numeric"
-							bind:value={leadDraft.number}
-							required
-						/></label
-					>
-				</fieldset>
-				<div class="grid gap-4 sm:grid-cols-2">
-					<label class="text-sm font-medium text-slate-700">
-						Academia
-						<select
-							class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-							bind:value={leadDraft.academyId}
-							required
-						>
-							<option value="" disabled>Selecione</option>
-							{#each activeAcademies as academy (academy.id)}
-								<option value={academy.id}>{academy.name}</option>
-							{/each}
-						</select>
-					</label>
-					<label class="text-sm font-medium text-slate-700">
-						Apresentação
-						<select
-							class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-							bind:value={leadDraft.presenter}
-						>
-							<option value="RECEPTIONIST">Recepção</option>
-							<option value="PROFESSOR">Professor</option>
-						</select>
-					</label>
-				</div>
-				{#if leadDraft.presenter === 'PROFESSOR'}
-					<label class="text-sm font-medium text-slate-700">
-						Professor
-						<select
-							class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-							bind:value={leadDraft.professorId}
-							required
-						>
-							<option value="" disabled>Selecione</option>
-							{#each filteredProfessors as professor (professor.id)}
-								<option value={professor.id}>{professor.name}</option>
-							{/each}
-						</select>
-					</label>
-				{/if}
 				<label class="text-sm font-medium text-slate-700">
-					Observações
-					<textarea
-						class="mt-1 w-full rounded-2xl border-slate-300"
-						rows="3"
-						bind:value={leadDraft.notes}></textarea>
+					Primeiro nome
+					<input
+						class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
+						bind:value={quickDraft.name}
+						placeholder="Ex.: Ana"
+						autocomplete="off"
+						minlength="2"
+						required
+					/>
 				</label>
-				<p class="text-xs font-medium text-emerald-700">{draftSaveStatus}</p>
-				<div class="grid gap-3 sm:grid-cols-2">
-					<button
-						type="button"
-						class="rounded-2xl border border-slate-300 px-5 py-4 text-base font-bold text-slate-700 hover:bg-slate-50"
-						onclick={checkDuplicates}
-						disabled={attendanceBusy}
+				<label class="text-sm font-medium text-slate-700">
+					Academia
+					<select
+						class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
+						bind:value={quickDraft.academyId}
+						onchange={() => void loadQueue()}
+						required
 					>
-						Checar duplicidade
-					</button>
-					<button
-						class="rounded-2xl bg-emerald-600 px-5 py-4 text-base font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
-						disabled={attendanceBusy}
-					>
-						Abrir atendimento
-					</button>
-				</div>
+						<option value="" disabled>Selecione</option>
+						{#each activeAcademies as academy (academy.id)}
+							<option value={academy.id}>{academy.name}</option>
+						{/each}
+					</select>
+				</label>
+				<button
+					class="rounded-2xl bg-emerald-600 px-5 py-4 text-base font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+					disabled={attendanceBusy}
+				>
+					Iniciar atendimento
+				</button>
 			</form>
 			<Notice message={attendanceMessage} />
-			{#if duplicateExact.length || duplicateProbable.length}
-				<div class="mt-4 grid gap-3">
-					{#each [...duplicateExact, ...duplicateProbable] as lead (lead.id)}
-						<div
-							class="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3"
-						>
-							<p class="text-sm">
-								<strong>{lead.name}</strong><br />{lead.email ?? 'Sem email'} · {lead.whatsapp_e164 ??
-									'Sem telefone'}
-							</p>
-							<button
-								class="rounded-xl bg-amber-600 px-3 py-2 text-sm font-bold text-white"
-								type="button"
-								onclick={() => useDuplicate(lead)}>Usar lead</button
-							>
-						</div>
-					{/each}
-				</div>
-			{/if}
 		</section>
 	</div>
 
@@ -460,36 +381,173 @@
 			<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
 					<h2 class="text-2xl font-bold text-slate-950">Fila visual</h2>
-					<p class="text-slate-600">Selecione um atendimento para registrar o próximo evento.</p>
+					<p class="text-slate-600">
+						Toque em um campo pendente para completá-lo sem sair da fila.
+					</p>
 				</div>
-				<button
-					class="rounded-2xl border border-slate-300 px-4 py-3 font-semibold text-slate-700 hover:bg-slate-50"
-					onclick={loadQueue}
-					disabled={queueLoading}
-				>
-					Atualizar fila
-				</button>
+				<div class="flex items-center gap-2">
+					{#if pendingCount}
+						<span
+							class="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-300"
+						>
+							{pendingCount} com dados pendentes
+						</span>
+					{/if}
+					<button
+						class="rounded-2xl border border-slate-300 px-4 py-3 font-semibold text-slate-700 hover:bg-slate-50"
+						onclick={loadQueue}
+						disabled={queueLoading}
+					>
+						Atualizar fila
+					</button>
+				</div>
 			</div>
 			{#if queue.length}
-				<div class="mt-5 grid gap-3 md:grid-cols-2">
+				<div class="mt-5 grid gap-3">
 					{#each queue as attendance (attendance.id)}
-						<button
-							type="button"
-							class={`rounded-2xl border p-4 text-left transition ${selectedAttendanceId === attendance.id ? 'border-sky-500 bg-sky-50 ring-2 ring-sky-200' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
-							onclick={() => (selectedAttendanceId = attendance.id)}
+						<article
+							class={`rounded-2xl border p-4 transition ${selectedAttendanceId === attendance.id ? 'border-sky-500 bg-sky-50 ring-2 ring-sky-200' : 'border-slate-200 bg-white'}`}
 						>
-							<span class="text-sm font-bold text-slate-950">{attendance.lead_name}</span>
-							<span class="mt-1 block text-xs text-slate-500">{attendance.whatsapp_e164}</span>
-							<span
-								class="mt-3 inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700"
-								>{statusLabel(attendance.status)}</span
-							>
-							<span class="mt-2 block text-xs text-slate-500"
-								>{attendance.professor_name ?? 'Sem professor'} · {dateTime(
-									attendance.started_at
-								)}</span
-							>
-						</button>
+							<div class="flex items-start justify-between gap-3">
+								<button
+									type="button"
+									class="min-w-0 flex-1 text-left"
+									onclick={() => (selectedAttendanceId = attendance.id)}
+								>
+									<span class="truncate text-sm font-bold text-slate-950"
+										>{attendance.lead_name}</span
+									>
+									<span class="mt-1 block text-xs text-slate-500">
+										{statusLabel(attendance.status)} · {dateTime(attendance.started_at)}
+									</span>
+								</button>
+								{#if selectedAttendanceId === attendance.id}
+									<span
+										class="shrink-0 rounded-full bg-sky-600 px-3 py-1 text-xs font-bold text-white"
+										>Selecionado</span
+									>
+								{/if}
+							</div>
+
+							{#if editing?.attendanceId === attendance.id}
+								{#if editing.field === 'phone'}
+									<form
+										class="mt-3 flex flex-wrap items-center gap-2"
+										onsubmit={(event) => {
+											event.preventDefault();
+											void savePhone(attendance);
+										}}
+									>
+										<input
+											class="min-w-0 flex-1 rounded-xl border-slate-300 text-base"
+											inputmode="numeric"
+											placeholder="DDD + número (ex.: 16999998888)"
+											bind:value={editingValue}
+											{@attach autofocus}
+										/>
+										<button
+											class="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-60"
+											disabled={editingBusy}>Salvar</button
+										>
+										<button
+											type="button"
+											class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600"
+											onclick={cancelEdit}>Cancelar</button
+										>
+									</form>
+								{:else if editing.field === 'email'}
+									<form
+										class="mt-3 flex flex-wrap items-center gap-2"
+										onsubmit={(event) => {
+											event.preventDefault();
+											void saveEmail(attendance);
+										}}
+									>
+										<input
+											class="min-w-0 flex-1 rounded-xl border-slate-300 text-base"
+											type="email"
+											placeholder="email@exemplo.com"
+											bind:value={editingValue}
+											{@attach autofocus}
+										/>
+										<button
+											class="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-60"
+											disabled={editingBusy}>Salvar</button
+										>
+										<button
+											type="button"
+											class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600"
+											onclick={cancelEdit}>Cancelar</button
+										>
+									</form>
+								{:else}
+									<div class="mt-3 flex flex-wrap items-center gap-2">
+										<select
+											class="min-w-0 flex-1 rounded-xl border-slate-300 text-base"
+											bind:value={editingValue}
+											onchange={() => void saveProfessor(attendance)}
+											disabled={editingBusy}
+											{@attach autofocus}
+										>
+											<option value="">Recepção (sem professor)</option>
+											{#each professorsForAcademy(attendance.academy_id) as professor (professor.id)}
+												<option value={professor.id}>{professor.name}</option>
+											{/each}
+										</select>
+										<button
+											type="button"
+											class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600"
+											onclick={cancelEdit}>Cancelar</button
+										>
+									</div>
+								{/if}
+							{:else}
+								<div class="mt-3 flex flex-wrap gap-2">
+									{#if attendance.whatsapp_e164}
+										<button
+											type="button"
+											class="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-slate-400"
+											onclick={() => startEdit(attendance, 'phone')}
+											title="Editar número">{attendance.whatsapp_e164}</button
+										>
+									{:else}
+										<button
+											type="button"
+											class="rounded-full border border-dashed border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
+											onclick={() => startEdit(attendance, 'phone')}>+ Número</button
+										>
+									{/if}
+									{#if attendance.lead_email}
+										<button
+											type="button"
+											class="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-slate-400"
+											onclick={() => startEdit(attendance, 'email')}
+											title="Editar email">{attendance.lead_email}</button
+										>
+									{:else}
+										<button
+											type="button"
+											class="rounded-full border border-dashed border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
+											onclick={() => startEdit(attendance, 'email')}>+ Email</button
+										>
+									{/if}
+									{#if attendance.professor_name}
+										<button
+											type="button"
+											class="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:ring-slate-400"
+											onclick={() => startEdit(attendance, 'professor')}
+											title="Trocar professor">{attendance.professor_name}</button
+										>
+									{:else}
+										<button
+											type="button"
+											class="rounded-full border border-dashed border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
+											onclick={() => startEdit(attendance, 'professor')}>+ Professor</button
+										>
+									{/if}
+								</div>
+							{/if}
+						</article>
 					{/each}
 				</div>
 			{:else}

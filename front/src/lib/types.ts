@@ -26,9 +26,12 @@ export type Professor = {
 export type Attendance = {
 	id: string;
 	academy_id: string;
+	lead_id: string;
 	lead_name: string;
-	whatsapp_e164: string;
+	lead_email?: string | null;
+	whatsapp_e164?: string | null;
 	receptionist_name: string;
+	professor_id?: string | null;
 	professor_name?: string | null;
 	status: 'DRAFT' | 'IN_PROGRESS' | 'PENDING' | 'FINALIZED';
 	started_at: string;

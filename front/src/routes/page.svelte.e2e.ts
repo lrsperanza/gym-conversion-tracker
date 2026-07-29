@@ -1,7 +1,31 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Page, Route } from '@playwright/test';
 
 const API_URL = 'http://localhost:3000';
+
+const academy = { id: 'academy-1', name: 'Skyfit Teste', city: 'Araraquara', active: true };
+const professor = {
+	id: 'prof-1',
+	academy_id: 'academy-1',
+	name: 'Prof Carlos',
+	email: null,
+	whatsapp_e164: '+5516999990000',
+	active: true
+};
+const pendingAttendance = {
+	id: 'att-1',
+	academy_id: 'academy-1',
+	lead_id: 'lead-1',
+	lead_name: 'Ana',
+	lead_email: null,
+	whatsapp_e164: null,
+	receptionist_name: 'Recepcionista',
+	professor_id: null,
+	professor_name: null,
+	status: 'IN_PROGRESS',
+	started_at: '2026-07-29T12:00:00.000Z',
+	closed_at: null
+};
 
 function sessionUser(roles: Array<{ role: string; academyId: string | null }>) {
 	return {
@@ -18,21 +42,29 @@ async function mockSession(page: Page, roles: Array<{ role: string; academyId: s
 	});
 }
 
-async function mockAttendanceData(page: Page) {
+function json(route: Route, body: unknown, status = 200) {
+	return route.fulfill({ json: body, status });
+}
+
+async function mockReferenceData(page: Page) {
 	await page.route(`${API_URL}/api/admin/academies`, async (route) => {
-		await route.fulfill({ json: { academies: [] } });
+		await json(route, { academies: [academy] });
 	});
 	await page.route(`${API_URL}/api/admin/professors`, async (route) => {
-		await route.fulfill({ json: { professors: [] } });
+		await json(route, { professors: [professor] });
 	});
 	await page.route(`${API_URL}/api/admin/outcome-types`, async (route) => {
-		await route.fulfill({ json: { outcomeTypes: [] } });
+		await json(route, { outcomeTypes: [] });
 	});
 	await page.route(`${API_URL}/api/admin/loss-reasons`, async (route) => {
-		await route.fulfill({ json: { lossReasons: [] } });
+		await json(route, { lossReasons: [] });
 	});
+}
+
+async function mockAttendanceData(page: Page) {
+	await mockReferenceData(page);
 	await page.route(`${API_URL}/api/attendances**`, async (route) => {
-		await route.fulfill({ json: { attendances: [] } });
+		await json(route, { attendances: [] });
 	});
 }
 
@@ -64,4 +96,94 @@ test('shows administration for mixed elevated profiles', async ({ page }) => {
 
 	await expect(page.getByRole('link', { name: 'Administração' })).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Conta' })).toHaveAttribute('aria-current', 'page');
+});
+
+test('starts an attendance with only the first name', async ({ page }) => {
+	await mockSession(page, [{ role: 'RECEPCIONISTA', academyId: 'academy-1' }]);
+	await mockReferenceData(page);
+
+	let createdBody: Record<string, unknown> | null = null;
+	await page.route(`${API_URL}/api/attendances**`, async (route) => {
+		if (route.request().method() === 'POST') {
+			createdBody = route.request().postDataJSON();
+			await json(route, { attendance: { ...pendingAttendance, id: 'att-2' } }, 201);
+			return;
+		}
+		await json(route, { attendances: [] });
+	});
+
+	await page.goto('/atendimento');
+	await page.getByLabel('Primeiro nome').fill('Beatriz');
+	await page.getByRole('button', { name: 'Iniciar atendimento' }).click();
+
+	await expect.poll(() => createdBody).not.toBeNull();
+	expect(createdBody).toMatchObject({
+		academyId: 'academy-1',
+		lead: { name: 'Beatriz' },
+		presenter: 'RECEPTIONIST',
+		status: 'IN_PROGRESS'
+	});
+	expect((createdBody as unknown as { lead: Record<string, unknown> }).lead).not.toHaveProperty(
+		'phone'
+	);
+});
+
+test('shows pending chips and saves phone, email and professor independently', async ({ page }) => {
+	await mockSession(page, [{ role: 'RECEPCIONISTA', academyId: 'academy-1' }]);
+	await mockReferenceData(page);
+
+	const patchCalls: Array<{ path: string; body: Record<string, unknown> }> = [];
+	await page.route(`${API_URL}/api/attendances**`, async (route) => {
+		if (route.request().method() === 'PATCH') {
+			patchCalls.push({
+				path: new URL(route.request().url()).pathname,
+				body: route.request().postDataJSON()
+			});
+			await json(route, { attendance: {} });
+			return;
+		}
+		await json(route, { attendances: [pendingAttendance] });
+	});
+	await page.route(`${API_URL}/api/leads/**`, async (route) => {
+		patchCalls.push({
+			path: new URL(route.request().url()).pathname,
+			body: route.request().postDataJSON()
+		});
+		await json(route, { lead: {} });
+	});
+
+	await page.goto('/atendimento');
+
+	await expect(page.getByRole('button', { name: '+ Número' })).toBeVisible();
+	await expect(page.getByRole('button', { name: '+ Email' })).toBeVisible();
+	await expect(page.getByRole('button', { name: '+ Professor' })).toBeVisible();
+	await expect(page.getByText('1 com dados pendentes')).toBeVisible();
+
+	// Telefone: chip pendente vira input inline e salva sozinho
+	await page.getByRole('button', { name: '+ Número' }).click();
+	await page.getByPlaceholder('DDD + número (ex.: 16999998888)').fill('16999990001');
+	await page.getByRole('button', { name: 'Salvar' }).click();
+	await expect.poll(() => patchCalls.length).toBe(1);
+	expect(patchCalls[0]).toEqual({
+		path: '/api/leads/lead-1',
+		body: { phone: { countryCode: '55', areaCode: '16', number: '999990001' } }
+	});
+
+	// Email: salva sem depender do telefone
+	await page.getByRole('button', { name: '+ Email' }).click();
+	await page.getByPlaceholder('email@exemplo.com').fill('ana@example.com');
+	await page.getByRole('button', { name: 'Salvar' }).click();
+	await expect.poll(() => patchCalls.length).toBe(2);
+	expect(patchCalls[1]).toEqual({ path: '/api/leads/lead-1', body: { email: 'ana@example.com' } });
+
+	// Professor: seleção salva na hora
+	await page.getByRole('button', { name: '+ Professor' }).click();
+	await page
+		.locator('select', { has: page.locator('option', { hasText: 'Prof Carlos' }) })
+		.selectOption('prof-1');
+	await expect.poll(() => patchCalls.length).toBe(3);
+	expect(patchCalls[2]).toEqual({
+		path: '/api/attendances/att-1',
+		body: { professorId: 'prof-1', presenter: 'PROFESSOR' }
+	});
 });
