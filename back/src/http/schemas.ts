@@ -130,6 +130,10 @@ export const attendanceEventInputSchema = z.discriminatedUnion('type', [
 		description: z.string().optional()
 	}),
 	z.object({
+		type: z.literal('SCHEDULE_CANCELLED'),
+		description: z.string().optional()
+	}),
+	z.object({
 		type: z.literal('OTHER'),
 		description: z.string().min(1)
 	}),

@@ -60,13 +60,31 @@ attendanceRoutes.get('/attendances', async (c) => {
 
 	const rows = hasAnyRole(user, ['ADMIN', 'SOCIO', 'GERENTE_REGIONAL', 'LIDER'])
 		? await sql`
-			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name
+			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
+				next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for
 			FROM "gym-conversion-tracker"."attendances" a
 			JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
 			JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
 			LEFT JOIN "gym-conversion-tracker"."professors" p ON p."id" = a."professor_id"
+			LEFT JOIN LATERAL (
+				SELECT e."type", e."scheduled_for"
+				FROM "gym-conversion-tracker"."attendance_events" e
+				WHERE e."attendance_id" = a."id"
+					AND e."type" IN ('EXPERIMENTAL_CLASS_SCHEDULED', 'FOLLOW_UP_SCHEDULED')
+					AND e."scheduled_for" IS NOT NULL
+					AND NOT EXISTS (
+						SELECT 1
+						FROM "gym-conversion-tracker"."attendance_events" cancel_event
+						WHERE cancel_event."attendance_id" = e."attendance_id"
+							AND cancel_event."type" = 'SCHEDULE_CANCELLED'
+							AND cancel_event."created_at" > e."created_at"
+					)
+				ORDER BY e."created_at" DESC
+				LIMIT 1
+			) next_schedule ON true
 			WHERE (${academyId ?? null}::text IS NULL OR a."academy_id" = ${academyId ?? null})
 				AND (${status ?? null}::text IS NULL OR a."status" = ${status ?? null})
+				AND (${status ?? null}::text IS NOT NULL OR a."status" <> 'FINALIZED')
 				AND (
 					${hasAnyRole(user, ['ADMIN', 'SOCIO'])} = true OR
 					a."academy_id" IN (
@@ -78,14 +96,32 @@ attendanceRoutes.get('/attendances', async (c) => {
 			LIMIT 200
 		`
 		: await sql`
-			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name
+			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
+				next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for
 			FROM "gym-conversion-tracker"."attendances" a
 			JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
 			JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
 			LEFT JOIN "gym-conversion-tracker"."professors" p ON p."id" = a."professor_id"
+			LEFT JOIN LATERAL (
+				SELECT e."type", e."scheduled_for"
+				FROM "gym-conversion-tracker"."attendance_events" e
+				WHERE e."attendance_id" = a."id"
+					AND e."type" IN ('EXPERIMENTAL_CLASS_SCHEDULED', 'FOLLOW_UP_SCHEDULED')
+					AND e."scheduled_for" IS NOT NULL
+					AND NOT EXISTS (
+						SELECT 1
+						FROM "gym-conversion-tracker"."attendance_events" cancel_event
+						WHERE cancel_event."attendance_id" = e."attendance_id"
+							AND cancel_event."type" = 'SCHEDULE_CANCELLED'
+							AND cancel_event."created_at" > e."created_at"
+					)
+				ORDER BY e."created_at" DESC
+				LIMIT 1
+			) next_schedule ON true
 			WHERE a."receptionist_id" = ${user.id}
 				AND (${academyId ?? null}::text IS NULL OR a."academy_id" = ${academyId ?? null})
 				AND (${status ?? null}::text IS NULL OR a."status" = ${status ?? null})
+				AND (${status ?? null}::text IS NOT NULL OR a."status" <> 'FINALIZED')
 			ORDER BY a."started_at" DESC
 			LIMIT 200
 		`;
@@ -221,6 +257,118 @@ attendanceRoutes.patch('/attendances/:id', async (c) => {
 
 	await audit({ actorUserId: user.id, action: 'attendance.update', entityType: 'attendance', entityId: id, payload: input, c });
 	return c.json({ attendance: updated });
+});
+
+attendanceRoutes.get('/leads', async (c) => {
+	const user = c.get('user');
+	const search = (c.req.query('search') || '').trim();
+	const scheduledOnly = c.req.query('scheduled') === 'upcoming';
+	const requestedLimit = Number(c.req.query('limit') || 50);
+	const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200) : 50;
+	const normalizedSearch = normalizeName(search);
+	const searchPattern = `%${search}%`;
+	const phoneDigits = search.replace(/\D/g, '');
+	const phonePattern = `%${phoneDigits}%`;
+	const canSeeAllLeads = hasAnyRole(user, ['ADMIN', 'SOCIO']);
+
+	const rows = await sql`
+		SELECT
+			l."id",
+			l."name",
+			l."email",
+			l."whatsapp_e164",
+			l."notes",
+			l."created_at",
+			l."updated_at",
+			last_attendance."id" AS last_attendance_id,
+			last_attendance."status" AS last_status,
+			last_attendance."academy_name",
+			last_attendance."started_at" AS last_started_at,
+			next_schedule."attendance_id" AS next_attendance_id,
+			next_schedule."type" AS next_event_type,
+			next_schedule."scheduled_for" AS next_scheduled_for
+		FROM "gym-conversion-tracker"."leads" l
+		LEFT JOIN LATERAL (
+			SELECT a."id", a."status", a."started_at", ac."name" AS academy_name
+			FROM "gym-conversion-tracker"."attendances" a
+			JOIN "gym-conversion-tracker"."academies" ac ON ac."id" = a."academy_id"
+			WHERE a."lead_id" = l."id"
+				AND (
+					${canSeeAllLeads} = true
+					OR a."receptionist_id" = ${user.id}
+					OR a."academy_id" IN (
+						SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+						WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+					)
+				)
+			ORDER BY a."started_at" DESC
+			LIMIT 1
+		) last_attendance ON true
+		LEFT JOIN LATERAL (
+			SELECT a."id" AS attendance_id, e."type", e."scheduled_for"
+			FROM "gym-conversion-tracker"."attendances" a
+			JOIN "gym-conversion-tracker"."attendance_events" e ON e."attendance_id" = a."id"
+			WHERE a."lead_id" = l."id"
+				AND e."type" IN ('EXPERIMENTAL_CLASS_SCHEDULED', 'FOLLOW_UP_SCHEDULED')
+				AND e."scheduled_for" IS NOT NULL
+				AND e."scheduled_for" >= now() - interval '1 hour'
+				AND (
+					${canSeeAllLeads} = true
+					OR a."receptionist_id" = ${user.id}
+					OR a."academy_id" IN (
+						SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+						WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+					)
+				)
+				AND NOT EXISTS (
+					SELECT 1
+					FROM "gym-conversion-tracker"."attendance_events" cancel_event
+					WHERE cancel_event."attendance_id" = e."attendance_id"
+						AND cancel_event."type" = 'SCHEDULE_CANCELLED'
+						AND cancel_event."created_at" > e."created_at"
+				)
+			ORDER BY e."scheduled_for" ASC
+			LIMIT 1
+		) next_schedule ON true
+		WHERE (
+				${canSeeAllLeads} = true
+				OR EXISTS (
+					SELECT 1
+					FROM "gym-conversion-tracker"."attendances" accessible_attendance
+					WHERE accessible_attendance."lead_id" = l."id"
+						AND (
+							accessible_attendance."receptionist_id" = ${user.id}
+							OR accessible_attendance."academy_id" IN (
+								SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+								WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+							)
+						)
+				)
+			)
+			AND (${scheduledOnly} = false OR next_schedule."scheduled_for" IS NOT NULL)
+			AND (
+				${search || null}::text IS NULL
+				OR (${normalizedSearch || null}::text IS NOT NULL AND l."normalized_name" % ${normalizedSearch || null})
+				OR l."name" ILIKE ${searchPattern}
+				OR l."email" ILIKE ${searchPattern}
+				OR (${phoneDigits || null}::text IS NOT NULL AND l."whatsapp_e164" ILIKE ${phonePattern})
+			)
+		ORDER BY
+			CASE WHEN ${scheduledOnly} THEN next_schedule."scheduled_for" END ASC NULLS LAST,
+			CASE WHEN ${normalizedSearch || null}::text IS NOT NULL THEN similarity(l."normalized_name", ${normalizedSearch || null}) END DESC NULLS LAST,
+			last_attendance."started_at" DESC NULLS LAST,
+			l."updated_at" DESC
+		LIMIT ${limit}
+	`;
+
+	await audit({
+		actorUserId: user.id,
+		action: scheduledOnly ? 'lead.scheduled_list' : 'lead.search',
+		entityType: 'lead',
+		payload: { search, scheduled: scheduledOnly, limit },
+		c
+	});
+	return c.json({ leads: rows });
 });
 
 attendanceRoutes.patch('/leads/:id', async (c) => {
@@ -365,6 +513,17 @@ attendanceRoutes.post('/attendances/:id/events', async (c) => {
 				VALUES (${attendanceId}, ${event.id}, ${input.lossReasonId}, ${input.description ?? null})
 			`;
 			await tx`UPDATE "gym-conversion-tracker"."attendances" SET "status" = 'FINALIZED', "closed_at" = now(), "updated_at" = now() WHERE "id" = ${attendanceId}`;
+			return event;
+		}
+
+		if (input.type === 'SCHEDULE_CANCELLED') {
+			const [event] = await tx<Array<{ id: string }>>`
+				INSERT INTO "gym-conversion-tracker"."attendance_events" ("attendance_id", "actor_user_id", "type", "description")
+				VALUES (${attendanceId}, ${user.id}, 'SCHEDULE_CANCELLED', ${input.description ?? null})
+				RETURNING *
+			`;
+			if (!event) throw new Error('Falha ao cancelar agendamento.');
+			await tx`UPDATE "gym-conversion-tracker"."attendances" SET "status" = 'IN_PROGRESS', "updated_at" = now() WHERE "id" = ${attendanceId}`;
 			return event;
 		}
 

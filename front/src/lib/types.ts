@@ -23,6 +23,17 @@ export type Professor = {
 	active: boolean;
 };
 
+export type AttendanceEventType =
+	| 'SALE'
+	| 'LOSS'
+	| 'EXPERIMENTAL_CLASS_SCHEDULED'
+	| 'EXPERIMENTAL_CLASS_NOW'
+	| 'FOLLOW_UP_SCHEDULED'
+	| 'SCHEDULE_CANCELLED'
+	| 'OTHER'
+	| 'REOPEN'
+	| 'NOTE';
+
 export type Attendance = {
 	id: string;
 	academy_id: string;
@@ -36,6 +47,25 @@ export type Attendance = {
 	status: 'DRAFT' | 'IN_PROGRESS' | 'PENDING' | 'FINALIZED';
 	started_at: string;
 	closed_at?: string | null;
+	next_event_type?: AttendanceEventType | null;
+	next_scheduled_for?: string | null;
+};
+
+export type LeadSummary = {
+	id: string;
+	name: string;
+	email?: string | null;
+	whatsapp_e164?: string | null;
+	notes?: string | null;
+	created_at: string;
+	updated_at: string;
+	last_attendance_id?: string | null;
+	last_status?: Attendance['status'] | null;
+	academy_name?: string | null;
+	last_started_at?: string | null;
+	next_attendance_id?: string | null;
+	next_event_type?: AttendanceEventType | null;
+	next_scheduled_for?: string | null;
 };
 
 export type OutcomeType = {

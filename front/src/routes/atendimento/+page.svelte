@@ -1,22 +1,23 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { api, dateTime, money } from '$lib/api/client';
+	import { api, dateTime } from '$lib/api/client';
 	import Empty from '$lib/components/Empty.svelte';
+	import EventFormModal from '$lib/components/EventFormModal.svelte';
+	import LeadNameEditor from '$lib/components/LeadNameEditor.svelte';
 	import Notice from '$lib/components/Notice.svelte';
-	import { asCents, errorMessage, queryString, statusLabel } from '$lib/helpers';
+	import {
+		errorMessage,
+		eventTypeLabel,
+		isImminent,
+		isQueueVisible,
+		parsePhone,
+		queryString,
+		statusLabel
+	} from '$lib/helpers';
 	import { getSessionContext } from '$lib/session';
 	import type { Academy, Attendance, LossReason, OutcomeType, Professor } from '$lib/types';
 	import { onMount } from 'svelte';
 
-	type EventType =
-		| 'SALE'
-		| 'LOSS'
-		| 'EXPERIMENTAL_CLASS_SCHEDULED'
-		| 'EXPERIMENTAL_CLASS_NOW'
-		| 'FOLLOW_UP_SCHEDULED'
-		| 'OTHER'
-		| 'REOPEN'
-		| 'NOTE';
 	type QuickDraft = {
 		name: string;
 		academyId: string;
@@ -28,16 +29,6 @@
 	};
 
 	const DRAFT_KEY = 'attendance-quick-draft';
-	const eventTypes: Array<{ value: EventType; label: string }> = [
-		{ value: 'NOTE', label: 'Nota' },
-		{ value: 'SALE', label: 'Venda' },
-		{ value: 'LOSS', label: 'Perda' },
-		{ value: 'EXPERIMENTAL_CLASS_SCHEDULED', label: 'Aula experimental agendada' },
-		{ value: 'EXPERIMENTAL_CLASS_NOW', label: 'Aula experimental agora' },
-		{ value: 'FOLLOW_UP_SCHEDULED', label: 'Follow-up agendado' },
-		{ value: 'OTHER', label: 'Outro evento' },
-		{ value: 'REOPEN', label: 'Reabrir atendimento' }
-	];
 	const { session } = getSessionContext();
 
 	let academies = $state.raw<Academy[]>([]);
@@ -46,36 +37,19 @@
 	let lossReasons = $state.raw<LossReason[]>([]);
 	let queue = $state.raw<Attendance[]>([]);
 	let queueLoading = $state(false);
-	let selectedAttendanceId = $state('');
 	let attendanceMessage = $state('');
 	let attendanceBusy = $state(false);
 	let quickDraft = $state<QuickDraft>(createQuickDraft());
 	let editing = $state<EditingTarget | null>(null);
 	let editingValue = $state('');
 	let editingBusy = $state(false);
-	let eventForm = $state({
-		type: 'NOTE' as EventType,
-		outcomeTypeId: '',
-		manualLabel: '',
-		manualValue: '',
-		lossReasonId: '',
-		scheduledFor: '',
-		description: ''
-	});
+	let modalAttendance = $state.raw<Attendance | null>(null);
+	let now = $state(new Date());
 	let activeAcademies = $derived(academies.filter((academy) => academy.active));
-	let activeOutcomeTypes = $derived(outcomeTypes.filter((outcome) => outcome.active));
-	let activeLossReasons = $derived(lossReasons.filter((reason) => reason.active));
-	let selectedAttendance = $derived(
-		queue.find((attendance) => attendance.id === selectedAttendanceId)
-	);
-	let selectedOutcome = $derived(
-		outcomeTypes.find((outcome) => outcome.id === eventForm.outcomeTypeId)
-	);
-	let saleNeedsManual = $derived(
-		!eventForm.outcomeTypeId || Boolean(selectedOutcome?.requires_manual_value)
-	);
+	let visibleQueue = $derived(queue.filter((attendance) => isQueueVisible(attendance, now)));
+	let hiddenScheduledCount = $derived(queue.length - visibleQueue.length);
 	let pendingCount = $derived(
-		queue.filter(
+		visibleQueue.filter(
 			(attendance) =>
 				!attendance.whatsapp_e164 || !attendance.lead_email || !attendance.professor_name
 		).length
@@ -83,6 +57,10 @@
 
 	onMount(() => {
 		void loadReferenceData();
+		const timer = window.setInterval(() => {
+			now = new Date();
+		}, 30_000);
+		return () => window.clearInterval(timer);
 	});
 
 	function defaultQuickDraft(): QuickDraft {
@@ -134,9 +112,6 @@
 				`/api/attendances${queryString({ academyId: quickDraft.academyId })}`
 			);
 			queue = data.attendances;
-			if (!queue.some((attendance) => attendance.id === selectedAttendanceId)) {
-				selectedAttendanceId = queue[0]?.id ?? '';
-			}
 		} catch (error) {
 			attendanceMessage = errorMessage(error);
 		} finally {
@@ -149,7 +124,7 @@
 		attendanceBusy = true;
 		attendanceMessage = '';
 		try {
-			const data = await api<{ attendance: Attendance }>('/api/attendances', {
+			await api<{ attendance: Attendance }>('/api/attendances', {
 				method: 'POST',
 				body: JSON.stringify({
 					academyId: quickDraft.academyId,
@@ -158,7 +133,6 @@
 					status: 'IN_PROGRESS'
 				})
 			});
-			selectedAttendanceId = data.attendance.id;
 			quickDraft.name = '';
 			saveQuickDraft();
 			attendanceMessage = 'Atendimento iniciado. Complete os dados direto na fila quando puder.';
@@ -188,13 +162,6 @@
 	function cancelEdit() {
 		editing = null;
 		editingValue = '';
-	}
-
-	function parsePhone(raw: string) {
-		let digits = raw.replace(/\D/g, '');
-		if (digits.startsWith('55') && digits.length >= 12) digits = digits.slice(2);
-		if (digits.length < 10) return null;
-		return { countryCode: '55', areaCode: digits.slice(0, 2), number: digits.slice(2) };
 	}
 
 	async function patchLead(attendance: Attendance, payload: Record<string, unknown>) {
@@ -257,67 +224,6 @@
 			attendanceMessage = errorMessage(error);
 		} finally {
 			editingBusy = false;
-		}
-	}
-
-	async function submitAttendanceEvent(event: SubmitEvent) {
-		event.preventDefault();
-		if (!selectedAttendanceId) {
-			attendanceMessage = 'Selecione um atendimento antes de registrar eventos.';
-			return;
-		}
-		if (
-			eventForm.type === 'SALE' &&
-			browser &&
-			!window.confirm('Confirmar venda para este atendimento?')
-		)
-			return;
-
-		attendanceBusy = true;
-		attendanceMessage = '';
-		try {
-			let payload: Record<string, unknown> = { type: eventForm.type };
-			if (eventForm.type === 'SALE') {
-				payload = {
-					type: 'SALE',
-					outcomeTypeId: eventForm.outcomeTypeId || null,
-					manualLabel: saleNeedsManual ? eventForm.manualLabel : undefined,
-					manualValueCents: saleNeedsManual ? asCents(eventForm.manualValue) : undefined
-				};
-			} else if (eventForm.type === 'LOSS') {
-				payload = {
-					type: 'LOSS',
-					lossReasonId: eventForm.lossReasonId,
-					description: eventForm.description || undefined
-				};
-			} else if (
-				eventForm.type === 'EXPERIMENTAL_CLASS_SCHEDULED' ||
-				eventForm.type === 'FOLLOW_UP_SCHEDULED'
-			) {
-				payload = {
-					type: eventForm.type,
-					scheduledFor: new Date(eventForm.scheduledFor).toISOString(),
-					description: eventForm.description || undefined
-				};
-			} else if (eventForm.type === 'OTHER' || eventForm.type === 'NOTE') {
-				payload = { type: eventForm.type, description: eventForm.description };
-			} else {
-				payload = { type: eventForm.type, description: eventForm.description || undefined };
-			}
-
-			await api<{ event: { id: string } }>(`/api/attendances/${selectedAttendanceId}/events`, {
-				method: 'POST',
-				body: JSON.stringify(payload)
-			});
-			eventForm.description = '';
-			eventForm.manualLabel = '';
-			eventForm.manualValue = '';
-			attendanceMessage = 'Evento registrado.';
-			await loadQueue();
-		} catch (error) {
-			attendanceMessage = errorMessage(error);
-		} finally {
-			attendanceBusy = false;
 		}
 	}
 </script>
@@ -402,31 +308,49 @@
 					</button>
 				</div>
 			</div>
-			{#if queue.length}
+			{#if hiddenScheduledCount > 0}
+				<p class="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+					{hiddenScheduledCount} aguardando horário agendado
+				</p>
+			{/if}
+
+			{#if visibleQueue.length}
 				<div class="mt-5 grid gap-3">
-					{#each queue as attendance (attendance.id)}
-						<article
-							class={`rounded-2xl border p-4 transition ${selectedAttendanceId === attendance.id ? 'border-sky-500 bg-sky-50 ring-2 ring-sky-200' : 'border-slate-200 bg-white'}`}
-						>
-							<div class="flex items-start justify-between gap-3">
-								<button
-									type="button"
-									class="min-w-0 flex-1 text-left"
-									onclick={() => (selectedAttendanceId = attendance.id)}
-								>
-									<span class="truncate text-sm font-bold text-slate-950"
-										>{attendance.lead_name}</span
-									>
+					{#each visibleQueue as attendance (attendance.id)}
+						<article class="rounded-2xl border border-slate-200 bg-white p-4 transition">
+							<div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+								<div class="min-w-0 flex-1">
+									<LeadNameEditor
+										leadId={attendance.lead_id}
+										name={attendance.lead_name}
+										onSaved={() => loadQueue()}
+									/>
 									<span class="mt-1 block text-xs text-slate-500">
 										{statusLabel(attendance.status)} · {dateTime(attendance.started_at)}
 									</span>
-								</button>
-								{#if selectedAttendanceId === attendance.id}
-									<span
-										class="shrink-0 rounded-full bg-sky-600 px-3 py-1 text-xs font-bold text-white"
-										>Selecionado</span
+								</div>
+								<div class="flex shrink-0 flex-wrap items-center gap-2">
+									{#if attendance.next_scheduled_for}
+										<span
+											class={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${
+												isImminent(attendance.next_scheduled_for, now)
+													? 'bg-amber-100 text-amber-900 ring-amber-300'
+													: 'bg-sky-50 text-sky-800 ring-sky-200'
+											}`}
+										>
+											{eventTypeLabel(attendance.next_event_type)} · {dateTime(
+												attendance.next_scheduled_for
+											)}
+										</span>
+									{/if}
+									<button
+										type="button"
+										class="rounded-xl bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-700"
+										onclick={() => (modalAttendance = attendance)}
 									>
-								{/if}
+										Registrar evento
+									</button>
+								</div>
 							</div>
 
 							{#if editing?.attendanceId === attendance.id}
@@ -551,106 +475,16 @@
 					{/each}
 				</div>
 			{:else}
-				<Empty text="Nenhum atendimento aberto para esta visão." />
+				<Empty text="Nenhum atendimento visível para esta visão." />
 			{/if}
-		</section>
-
-		<section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-			<h3 class="text-xl font-bold text-slate-950">Registrar evento</h3>
-			<p class="text-sm text-slate-600">
-				{#if selectedAttendance}
-					Selecionado: <strong>{selectedAttendance.lead_name}</strong>
-				{:else}
-					Selecione um atendimento na fila.
-				{/if}
-			</p>
-			<form class="mt-5 grid gap-4" onsubmit={submitAttendanceEvent}>
-				<label class="text-sm font-medium text-slate-700">
-					Tipo de evento
-					<select
-						class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
-						bind:value={eventForm.type}
-					>
-						{#each eventTypes as type (type.value)}
-							<option value={type.value}>{type.label}</option>
-						{/each}
-					</select>
-				</label>
-				{#if eventForm.type === 'SALE'}
-					<label class="text-sm font-medium text-slate-700">
-						Plano vendido
-						<select
-							class="mt-1 w-full rounded-2xl border-slate-300"
-							bind:value={eventForm.outcomeTypeId}
-						>
-							<option value="">Venda manual</option>
-							{#each activeOutcomeTypes as outcome (outcome.id)}
-								<option value={outcome.id}
-									>{outcome.label}{outcome.current_value_cents
-										? ` · ${money(outcome.current_value_cents)}`
-										: ''}</option
-								>
-							{/each}
-						</select>
-					</label>
-					{#if saleNeedsManual}
-						<div class="grid gap-4 sm:grid-cols-2">
-							<label class="text-sm font-medium text-slate-700"
-								>Descrição manual<input
-									class="mt-1 w-full rounded-2xl border-slate-300"
-									bind:value={eventForm.manualLabel}
-									required
-								/></label
-							>
-							<label class="text-sm font-medium text-slate-700"
-								>Valor em R$<input
-									class="mt-1 w-full rounded-2xl border-slate-300"
-									inputmode="decimal"
-									bind:value={eventForm.manualValue}
-									required
-								/></label
-							>
-						</div>
-					{/if}
-				{:else if eventForm.type === 'LOSS'}
-					<label class="text-sm font-medium text-slate-700">
-						Motivo da perda
-						<select
-							class="mt-1 w-full rounded-2xl border-slate-300"
-							bind:value={eventForm.lossReasonId}
-							required
-						>
-							<option value="" disabled>Selecione</option>
-							{#each activeLossReasons as reason (reason.id)}
-								<option value={reason.id}>{reason.label}</option>
-							{/each}
-						</select>
-					</label>
-				{:else if eventForm.type === 'EXPERIMENTAL_CLASS_SCHEDULED' || eventForm.type === 'FOLLOW_UP_SCHEDULED'}
-					<label class="text-sm font-medium text-slate-700"
-						>Data e horário<input
-							class="mt-1 w-full rounded-2xl border-slate-300"
-							type="datetime-local"
-							bind:value={eventForm.scheduledFor}
-							required
-						/></label
-					>
-				{/if}
-				<label class="text-sm font-medium text-slate-700">
-					Descrição / nota
-					<textarea
-						class="mt-1 w-full rounded-2xl border-slate-300"
-						rows="3"
-						bind:value={eventForm.description}
-						required={eventForm.type === 'OTHER' || eventForm.type === 'NOTE'}></textarea>
-				</label>
-				<button
-					class="rounded-2xl bg-sky-600 px-5 py-4 text-base font-bold text-white hover:bg-sky-700 disabled:opacity-60"
-					disabled={attendanceBusy || !selectedAttendanceId}
-				>
-					Registrar evento
-				</button>
-			</form>
 		</section>
 	</div>
 </section>
+
+<EventFormModal
+	attendance={modalAttendance}
+	{outcomeTypes}
+	{lossReasons}
+	onClose={() => (modalAttendance = null)}
+	onSaved={loadQueue}
+/>

@@ -1,5 +1,5 @@
 import { ApiError } from '$lib/api/client';
-import type { Role } from '$lib/types';
+import type { Attendance, AttendanceEventType, Role } from '$lib/types';
 
 export function errorMessage(error: unknown, fallback = 'Não foi possível concluir a ação.') {
 	if (error instanceof ApiError) {
@@ -16,6 +16,41 @@ export function statusLabel(status: string) {
 		FINALIZED: 'Finalizado'
 	};
 	return labels[status] ?? status;
+}
+
+export function eventTypeLabel(type?: AttendanceEventType | string | null) {
+	const labels: Record<string, string> = {
+		SALE: 'Venda',
+		LOSS: 'Perda',
+		EXPERIMENTAL_CLASS_SCHEDULED: 'Aula experimental agendada',
+		EXPERIMENTAL_CLASS_NOW: 'Aula experimental agora',
+		FOLLOW_UP_SCHEDULED: 'Follow-up agendado',
+		SCHEDULE_CANCELLED: 'Agendamento cancelado',
+		OTHER: 'Outro evento',
+		REOPEN: 'Reabertura',
+		NOTE: 'Nota'
+	};
+	return type ? (labels[type] ?? type) : 'Evento';
+}
+
+export function isImminent(scheduledFor?: string | null, now = new Date()) {
+	if (!scheduledFor) return false;
+	const scheduledAt = new Date(scheduledFor).getTime();
+	if (!Number.isFinite(scheduledAt)) return false;
+	return scheduledAt - now.getTime() <= 15 * 60 * 1000;
+}
+
+export function isQueueVisible(attendance: Pick<Attendance, 'status' | 'next_scheduled_for'>, now = new Date()) {
+	if (attendance.status === 'FINALIZED') return false;
+	if (attendance.status !== 'PENDING' || !attendance.next_scheduled_for) return true;
+	return isImminent(attendance.next_scheduled_for, now);
+}
+
+export function parsePhone(raw: string) {
+	let digits = raw.replace(/\D/g, '');
+	if (digits.startsWith('55') && digits.length >= 12) digits = digits.slice(2);
+	if (digits.length < 10) return null;
+	return { countryCode: '55', areaCode: digits.slice(0, 2), number: digits.slice(2) };
 }
 
 export function roleLabel(role: Role) {

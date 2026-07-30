@@ -39,6 +39,7 @@ export const attendanceEventTypeEnum = gym.enum('attendance_event_type', [
 	'FOLLOW_UP_SCHEDULED',
 	'SALE',
 	'LOSS',
+	'SCHEDULE_CANCELLED',
 	'OTHER',
 	'REOPEN',
 	'NOTE'

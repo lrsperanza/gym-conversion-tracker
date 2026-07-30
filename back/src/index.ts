@@ -38,6 +38,8 @@ app.get('/openapi.json', (c) =>
 			'/api/admin/professors': { get: { summary: 'Lista professores' }, post: { summary: 'Cria professor sem login' } },
 			'/api/admin/outcome-types': { get: { summary: 'Lista tipos de resultado' }, post: { summary: 'Cria tipo de resultado de venda' } },
 			'/api/leads/duplicates': { get: { summary: 'Busca duplicidades exatas e prováveis' } },
+			'/api/leads': { get: { summary: 'Busca leads e lista agendamentos futuros' } },
+			'/api/leads/{id}': { patch: { summary: 'Atualiza dados cadastrais do lead' } },
 			'/api/attendances': { get: { summary: 'Lista atendimentos' }, post: { summary: 'Abre atendimento no horário atual do servidor' } },
 			'/api/attendances/{id}/events': { post: { summary: 'Registra evento append-only no atendimento' } },
 			'/api/dashboard/summary': { get: { summary: 'KPIs e séries de conversão' } },

@@ -12,8 +12,10 @@
 	import type { User } from '$lib/types';
 	import { onMount } from 'svelte';
 
-	type NavHref = '/atendimento' | '/dashboard' | '/administracao' | '/conta';
+	type NavHref = '/atendimento' | '/leads' | '/dashboard' | '/administracao' | '/conta';
 	type NavLink = { href: NavHref; label: string };
+
+	const PUBLIC_ROUTES = new Set(['/redefinir-senha']);
 
 	let { children } = $props();
 
@@ -22,9 +24,11 @@
 	let resetRequestForm = $state({ email: '' });
 	let accountMessage = $state('');
 	let pathname = $derived(page.url.pathname);
+	let isPublicRoute = $derived(PUBLIC_ROUTES.has(pathname));
 	let navLinks = $derived.by(() => {
 		const links: NavLink[] = [
 			{ href: '/atendimento', label: 'Atendimento' },
+			{ href: '/leads', label: 'Leads' },
 			{ href: '/dashboard', label: 'Dashboard' }
 		];
 
@@ -116,7 +120,11 @@
 </svelte:head>
 
 <div class="min-h-screen bg-slate-50 text-slate-950">
-	{#if session.loading}
+	{#if isPublicRoute}
+		<main class="mx-auto flex min-h-screen max-w-6xl items-center justify-center p-6">
+			{@render children()}
+		</main>
+	{:else if session.loading}
 		<main class="mx-auto flex min-h-screen max-w-6xl items-center justify-center p-6">
 			<p class="rounded-3xl bg-white px-6 py-5 text-slate-600 shadow-sm ring-1 ring-slate-200">
 				Carregando sessão...

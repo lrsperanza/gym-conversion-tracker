@@ -118,12 +118,12 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 						WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
 					)
 				)
-		), professor_global AS (
-			SELECT "professor_id", COUNT(DISTINCT "id")::float AS total, COUNT(DISTINCT s."attendance_id")::float AS converted
-			FROM scoped
-			LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = scoped."id"
-			GROUP BY "professor_id"
-		)
+	), professor_global AS (
+		SELECT scoped."professor_id", COUNT(DISTINCT scoped."id")::float AS total, COUNT(DISTINCT s."attendance_id")::float AS converted
+		FROM scoped
+		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = scoped."id"
+		GROUP BY scoped."professor_id"
+	)
 		SELECT
 			u."name" AS receptionist_name,
 			p."name" AS professor_name,
