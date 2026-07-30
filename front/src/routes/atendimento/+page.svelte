@@ -48,12 +48,6 @@
 	let activeAcademies = $derived(academies.filter((academy) => academy.active));
 	let visibleQueue = $derived(queue.filter((attendance) => isQueueVisible(attendance, now)));
 	let hiddenScheduledCount = $derived(queue.length - visibleQueue.length);
-	let pendingCount = $derived(
-		visibleQueue.filter(
-			(attendance) =>
-				!attendance.whatsapp_e164 || !attendance.lead_email || !attendance.professor_name
-		).length
-	);
 
 	onMount(() => {
 		void loadReferenceData();
@@ -292,13 +286,6 @@
 					</p>
 				</div>
 				<div class="flex items-center gap-2">
-					{#if pendingCount}
-						<span
-							class="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-300"
-						>
-							{pendingCount} com dados pendentes
-						</span>
-					{/if}
 					<button
 						class="rounded-2xl border border-slate-300 px-4 py-3 font-semibold text-slate-700 hover:bg-slate-50"
 						onclick={loadQueue}
@@ -326,7 +313,9 @@
 										onSaved={() => loadQueue()}
 									/>
 									<span class="mt-1 block text-xs text-slate-500">
-										{statusLabel(attendance.status)} · {dateTime(attendance.started_at)}
+										{attendance.receptionist_name} · {statusLabel(attendance.status)} · {dateTime(
+											attendance.started_at
+										)}
 									</span>
 								</div>
 								<div class="flex shrink-0 flex-wrap items-center gap-2">

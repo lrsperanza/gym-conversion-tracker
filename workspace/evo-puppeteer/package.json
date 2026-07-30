@@ -1,0 +1,26 @@
+{
+  "name": "evo-puppeteer",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "evo-puppeteer": "index.ts"
+  },
+  "scripts": {
+    "start": "bun run index.ts",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "puppeteer browsers install chrome"
+  },
+  "trustedDependencies": [
+    "puppeteer"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "puppeteer": "^25.4.0"
+  }
+}

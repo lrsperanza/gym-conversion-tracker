@@ -58,73 +58,42 @@ attendanceRoutes.get('/attendances', async (c) => {
 	const status = c.req.query('status');
 	if (academyId) assertCanAccessAcademy(user, academyId);
 
-	const rows = hasAnyRole(user, ['ADMIN', 'SOCIO', 'GERENTE_REGIONAL', 'LIDER'])
-		? await sql`
-			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
-				next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for
-			FROM "gym-conversion-tracker"."attendances" a
-			JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
-			JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
-			LEFT JOIN "gym-conversion-tracker"."professors" p ON p."id" = a."professor_id"
-			LEFT JOIN LATERAL (
-				SELECT e."type", e."scheduled_for"
-				FROM "gym-conversion-tracker"."attendance_events" e
-				WHERE e."attendance_id" = a."id"
-					AND e."type" IN ('EXPERIMENTAL_CLASS_SCHEDULED', 'FOLLOW_UP_SCHEDULED')
-					AND e."scheduled_for" IS NOT NULL
-					AND NOT EXISTS (
-						SELECT 1
-						FROM "gym-conversion-tracker"."attendance_events" cancel_event
-						WHERE cancel_event."attendance_id" = e."attendance_id"
-							AND cancel_event."type" = 'SCHEDULE_CANCELLED'
-							AND cancel_event."created_at" > e."created_at"
-					)
-				ORDER BY e."created_at" DESC
-				LIMIT 1
-			) next_schedule ON true
-			WHERE (${academyId ?? null}::text IS NULL OR a."academy_id" = ${academyId ?? null})
-				AND (${status ?? null}::text IS NULL OR a."status" = ${status ?? null})
-				AND (${status ?? null}::text IS NOT NULL OR a."status" <> 'FINALIZED')
-				AND (
-					${hasAnyRole(user, ['ADMIN', 'SOCIO'])} = true OR
-					a."academy_id" IN (
-						SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
-						WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
-					)
+	const rows = await sql`
+		SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
+			next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for
+		FROM "gym-conversion-tracker"."attendances" a
+		JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
+		JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
+		LEFT JOIN "gym-conversion-tracker"."professors" p ON p."id" = a."professor_id"
+		LEFT JOIN LATERAL (
+			SELECT e."type", e."scheduled_for"
+			FROM "gym-conversion-tracker"."attendance_events" e
+			WHERE e."attendance_id" = a."id"
+				AND e."type" IN ('EXPERIMENTAL_CLASS_SCHEDULED', 'FOLLOW_UP_SCHEDULED')
+				AND e."scheduled_for" IS NOT NULL
+				AND NOT EXISTS (
+					SELECT 1
+					FROM "gym-conversion-tracker"."attendance_events" cancel_event
+					WHERE cancel_event."attendance_id" = e."attendance_id"
+						AND cancel_event."type" = 'SCHEDULE_CANCELLED'
+						AND cancel_event."created_at" > e."created_at"
 				)
-			ORDER BY a."started_at" DESC
-			LIMIT 200
-		`
-		: await sql`
-			SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
-				next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for
-			FROM "gym-conversion-tracker"."attendances" a
-			JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
-			JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
-			LEFT JOIN "gym-conversion-tracker"."professors" p ON p."id" = a."professor_id"
-			LEFT JOIN LATERAL (
-				SELECT e."type", e."scheduled_for"
-				FROM "gym-conversion-tracker"."attendance_events" e
-				WHERE e."attendance_id" = a."id"
-					AND e."type" IN ('EXPERIMENTAL_CLASS_SCHEDULED', 'FOLLOW_UP_SCHEDULED')
-					AND e."scheduled_for" IS NOT NULL
-					AND NOT EXISTS (
-						SELECT 1
-						FROM "gym-conversion-tracker"."attendance_events" cancel_event
-						WHERE cancel_event."attendance_id" = e."attendance_id"
-							AND cancel_event."type" = 'SCHEDULE_CANCELLED'
-							AND cancel_event."created_at" > e."created_at"
-					)
-				ORDER BY e."created_at" DESC
-				LIMIT 1
-			) next_schedule ON true
-			WHERE a."receptionist_id" = ${user.id}
-				AND (${academyId ?? null}::text IS NULL OR a."academy_id" = ${academyId ?? null})
-				AND (${status ?? null}::text IS NULL OR a."status" = ${status ?? null})
-				AND (${status ?? null}::text IS NOT NULL OR a."status" <> 'FINALIZED')
-			ORDER BY a."started_at" DESC
-			LIMIT 200
-		`;
+			ORDER BY e."created_at" DESC
+			LIMIT 1
+		) next_schedule ON true
+		WHERE (${academyId ?? null}::text IS NULL OR a."academy_id" = ${academyId ?? null})
+			AND (${status ?? null}::text IS NULL OR a."status" = ${status ?? null})
+			AND (${status ?? null}::text IS NOT NULL OR a."status" <> 'FINALIZED')
+			AND (
+				${hasAnyRole(user, ['ADMIN', 'SOCIO'])} = true OR
+				a."academy_id" IN (
+					SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+					WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+				)
+			)
+		ORDER BY a."started_at" DESC
+		LIMIT 200
+	`;
 
 	return c.json({ attendances: rows });
 });

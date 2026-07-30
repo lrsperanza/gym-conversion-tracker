@@ -157,7 +157,6 @@ test('shows pending chips and saves phone, email and professor independently', a
 	await expect(page.getByRole('button', { name: '+ Número' })).toBeVisible();
 	await expect(page.getByRole('button', { name: '+ Email' })).toBeVisible();
 	await expect(page.getByRole('button', { name: '+ Professor' })).toBeVisible();
-	await expect(page.getByText('1 com dados pendentes')).toBeVisible();
 
 	// Telefone: chip pendente vira input inline e salva sozinho
 	await page.getByRole('button', { name: '+ Número' }).click();
