@@ -15,7 +15,7 @@ $REGISTRY = "$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY"
 $SERVICE_NAME = "gym-conversion-tracker"
 $IMAGE_NAME = "gym-conversion-tracker-image"
 $CORS_ORIGIN = "*"
-$APP_URL = "https://gym-conversion-tracker-23tkyyl7kq-rj.a.run.app"
+$APP_URL = "https://nice-pebble-04842d70f.7.azurestaticapps.net"
 $GCLOUD = "gcloud.cmd"
 
 # Generate a timestamp tag for versioning

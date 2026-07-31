@@ -1,25 +1,29 @@
 import { ApiError } from './client';
-
-const EVO_URL = (import.meta.env.PUBLIC_EVO_URL || '').replace(/\/$/, '');
+import { bridgeFetchOptions, getBridgeBaseUrl } from './bridge';
 
 export async function evoAvailable(): Promise<boolean> {
-	try {
-		const response = await fetch(`${EVO_URL}/evo/health`, { credentials: 'include' });
-		return response.ok;
-	} catch {
-		return false;
-	}
+	return (await getBridgeBaseUrl()) !== null;
 }
 
 export async function evoApi<T>(path: string, options: RequestInit = {}): Promise<T> {
-	const response = await fetch(`${EVO_URL}${path}`, {
-		...options,
-		credentials: 'include',
-		headers: {
-			'Content-Type': 'application/json',
-			...options.headers
-		}
-	});
+	const bridgeBaseUrl = await getBridgeBaseUrl();
+	if (bridgeBaseUrl === null) {
+		throw new ApiError('Bridge EVO indisponível.', 0);
+	}
+
+	const response = await fetch(
+		`${bridgeBaseUrl}${path}`,
+		bridgeFetchOptions(
+			{
+				...options,
+				headers: {
+					'Content-Type': 'application/json',
+					...options.headers
+				}
+			},
+			bridgeBaseUrl
+		)
+	);
 
 	const payload = await response.json().catch(() => null);
 	if (!response.ok) {

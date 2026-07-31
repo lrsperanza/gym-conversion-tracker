@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import { env } from '../config/env';
+import { AppError } from '../http/errors';
 
 const transporter = nodemailer.createTransport({
 	host: env.smtp.host,
@@ -16,17 +17,29 @@ const transporter = nodemailer.createTransport({
 
 export async function sendEmail(input: { to: string; subject: string; text: string; html: string }) {
 	if (!env.smtp.fromEmail) {
-		console.warn(`SMTP_FROM_EMAIL ausente. Email não enviado para ${input.to}: ${input.subject}`);
-		return;
+		throw new AppError(
+			503,
+			'Serviço de email indisponível. Configure o remetente SMTP e tente novamente.',
+			'EMAIL_UNAVAILABLE'
+		);
 	}
 
-	await transporter.sendMail({
-		from: `"${env.smtp.fromName}" <${env.smtp.fromEmail}>`,
-		to: input.to,
-		subject: input.subject,
-		text: input.text,
-		html: input.html
-	});
+	try {
+		await transporter.sendMail({
+			from: `"${env.smtp.fromName}" <${env.smtp.fromEmail}>`,
+			to: input.to,
+			subject: input.subject,
+			text: input.text,
+			html: input.html
+		});
+	} catch (error) {
+		console.error('[mail] Falha ao enviar email:', error);
+		throw new AppError(
+			503,
+			'Serviço de email indisponível. Verifique as credenciais SMTP e tente novamente.',
+			'EMAIL_UNAVAILABLE'
+		);
+	}
 }
 
 export function confirmationEmail(to: string, name: string, token: string) {

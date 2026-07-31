@@ -143,7 +143,7 @@
 				evoCredentials = null;
 				return;
 			}
-			const credentials = await evoApi<EvoCredentialsStatus>('/api/evo/credentials');
+			const credentials = await api<EvoCredentialsStatus>('/api/evo/credentials');
 			if (attendance?.id !== attendanceId) return;
 			evoCredentials = credentials;
 			evoCredentialsForm.username = credentials.username ?? '';
@@ -173,7 +173,7 @@
 
 	async function ensureEvoCredentials() {
 		if (evoCredentialsConfigured) return;
-		const credentials = await evoApi<EvoCredentialsStatus>('/api/evo/credentials', {
+		const credentials = await api<EvoCredentialsStatus>('/api/evo/credentials', {
 			method: 'PUT',
 			body: JSON.stringify(evoCredentialsForm)
 		});
@@ -200,9 +200,13 @@
 	async function submitEvoSale(attendanceId: string) {
 		messageKind = 'info';
 		message = 'Enviando venda para o EVO...';
+		const { ticket } = await api<{ ticket: string; expiresAt: string }>(
+			`/api/evo/attendances/${attendanceId}/ticket`,
+			{ method: 'POST' }
+		);
 		const { jobId } = await evoApi<{ jobId: string }>('/evo/venda', {
 			method: 'POST',
-			body: JSON.stringify({ attendanceId })
+			body: JSON.stringify({ attendanceId, ticket })
 		});
 		const job = await pollEvoJob(jobId);
 		if (job.status === 'failed') {
@@ -347,7 +351,9 @@
 					</p>
 					{#if attendance.next_scheduled_for}
 						<p class="mt-2 text-xs font-semibold text-sky-700">
-							{eventTypeLabel(attendance.next_event_type)} em {dateTime(attendance.next_scheduled_for)}
+							{eventTypeLabel(attendance.next_event_type)} em {dateTime(
+								attendance.next_scheduled_for
+							)}
 						</p>
 					{/if}
 				</div>
@@ -423,11 +429,15 @@
 					{/if}
 
 					{#if evoLoading}
-						<p class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+						<p
+							class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
+						>
 							Verificando integração EVO...
 						</p>
 					{:else if evoBridgeAvailable}
-						<label class="flex items-center gap-2 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-900">
+						<label
+							class="flex items-center gap-2 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-900"
+						>
 							<input
 								class="rounded border-slate-300"
 								type="checkbox"
@@ -550,7 +560,9 @@
 							</div>
 						{/if}
 					{:else}
-						<p class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+						<p
+							class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
+						>
 							Integração EVO indisponível. A venda será registrada apenas no tracker.
 						</p>
 					{/if}
@@ -588,8 +600,7 @@
 						rows="3"
 						bind:value={eventForm.description}
 						disabled={busy}
-						required={eventForm.type === 'OTHER' || eventForm.type === 'NOTE'}
-					></textarea>
+						required={eventForm.type === 'OTHER' || eventForm.type === 'NOTE'}></textarea>
 				</label>
 
 				{#if message}

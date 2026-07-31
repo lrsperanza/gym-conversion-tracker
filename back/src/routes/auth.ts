@@ -52,7 +52,11 @@ authRoutes.post('/request-password-reset', async (c) => {
 
 	if (user) {
 		const token = await createEmailToken(user.id, 'PASSWORD_RESET', 60);
-		await passwordResetEmail(user.email, user.name, token);
+		try {
+			await passwordResetEmail(user.email, user.name, token);
+		} catch (error) {
+			console.error('[auth] Falha ao enviar email de redefinição de senha:', error);
+		}
 		await audit({ actorUserId: user.id, action: 'auth.password_reset_requested', entityType: 'user', entityId: user.id, c });
 	}
 

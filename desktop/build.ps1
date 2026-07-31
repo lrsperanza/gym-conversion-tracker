@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$BackUrl = "https://gym-conversion-tracker-437354431924.southamerica-east1.run.app",
+    [string]$FrontUrl = "https://nice-pebble-04842d70f.7.azurestaticapps.net",
     [switch]$SkipChecks
 )
 
@@ -74,6 +75,16 @@ try {
 }
 
 $BackUrl = $BackUrl.TrimEnd("/")
+try {
+    $FrontUri = [System.Uri]$FrontUrl
+    if (-not $FrontUri.IsAbsoluteUri) {
+        throw "FrontUrl must be absolute."
+    }
+} catch {
+    throw "Invalid FrontUrl '$FrontUrl'. Provide an absolute URL."
+}
+
+$FrontUrl = $FrontUrl.TrimEnd("/")
 $DesktopDir = Split-Path -Parent $PSCommandPath
 $RootDir = (Resolve-Path -LiteralPath (Join-Path $DesktopDir "..")).Path
 $FrontDir = Join-Path $RootDir "front"
@@ -81,7 +92,6 @@ $EvoPuppeteerDir = Join-Path $RootDir "evo-puppeteer"
 $EvoBridgeDir = Join-Path $RootDir "evo-bridge"
 $TauriDir = Join-Path $DesktopDir "src-tauri"
 $PayloadDir = Join-Path $TauriDir "payload"
-$PayloadFrontDir = Join-Path $PayloadDir "front"
 $DistDir = Join-Path $DesktopDir "dist"
 $ConfigPath = Join-Path $TauriDir "tauri.conf.json"
 $Version = [string]((Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json).version)
@@ -108,26 +118,11 @@ if (-not $SkipChecks) {
     Invoke-InDirectory $EvoBridgeDir { Invoke-Native "bun" @("run", "typecheck") }
 }
 
-Write-Step "Building frontend"
-$HadPublicApiUrl = Test-Path Env:PUBLIC_API_URL
-$PreviousPublicApiUrl = $env:PUBLIC_API_URL
-try {
-    $env:PUBLIC_API_URL = "/"
-    Invoke-InDirectory $FrontDir { Invoke-Native "bun" @("run", "build") }
-} finally {
-    if ($HadPublicApiUrl) {
-        $env:PUBLIC_API_URL = $PreviousPublicApiUrl
-    } else {
-        Remove-Item Env:PUBLIC_API_URL -ErrorAction SilentlyContinue
-    }
-}
-
 Write-Step "Preparing Tauri payload"
 if (Test-Path -LiteralPath $PayloadDir) {
     Remove-Item -LiteralPath $PayloadDir -Recurse -Force
 }
-New-Item -ItemType Directory -Force -Path $PayloadFrontDir | Out-Null
-Copy-DirectoryContents (Join-Path $FrontDir "build") $PayloadFrontDir
+New-Item -ItemType Directory -Force -Path $PayloadDir | Out-Null
 
 Write-Step "Compiling bridge executable"
 $BridgeOut = Join-Path $PayloadDir "bridge.exe"
@@ -164,14 +159,22 @@ if (Test-Path -LiteralPath $IconSource -PathType Leaf) {
 Write-Step "Building Tauri executable"
 $HadSkyfitBackUrl = Test-Path Env:SKYFIT_BACK_URL
 $PreviousSkyfitBackUrl = $env:SKYFIT_BACK_URL
+$HadSkyfitFrontUrl = Test-Path Env:SKYFIT_FRONT_URL
+$PreviousSkyfitFrontUrl = $env:SKYFIT_FRONT_URL
 try {
     $env:SKYFIT_BACK_URL = $BackUrl
+    $env:SKYFIT_FRONT_URL = $FrontUrl
     Invoke-InDirectory $TauriDir { Invoke-Native "cargo" @("tauri", "build") }
 } finally {
     if ($HadSkyfitBackUrl) {
         $env:SKYFIT_BACK_URL = $PreviousSkyfitBackUrl
     } else {
         Remove-Item Env:SKYFIT_BACK_URL -ErrorAction SilentlyContinue
+    }
+    if ($HadSkyfitFrontUrl) {
+        $env:SKYFIT_FRONT_URL = $PreviousSkyfitFrontUrl
+    } else {
+        Remove-Item Env:SKYFIT_FRONT_URL -ErrorAction SilentlyContinue
     }
 }
 
@@ -210,7 +213,7 @@ Skyfit EVO Desktop $Version
 Como usar:
 1. Instale o Google Chrome antes de abrir o aplicativo.
 2. Execute $ExeName.
-3. O aplicativo tenta usar http://localhost:4000 primeiro. Se nao houver app local disponivel, ele inicia o bridge embutido em localhost:4000. Se o local falhar, abre $BackUrl.
+3. O aplicativo tenta usar http://localhost:4000 primeiro. Se nao houver bridge local disponivel, ele inicia o bridge embutido em localhost:4000, que carrega o front remoto em $FrontUrl. Se o bridge falhar, abre $FrontUrl diretamente.
 4. Ao fechar o app, o Chrome aberto para revisar/salvar cadastros do EVO permanece aberto.
 
 Artefatos:

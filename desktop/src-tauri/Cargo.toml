@@ -7,7 +7,7 @@ edition = "2021"
 build = "build.rs"
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-single-instance = "2"
 tar = "0.4"
 zstd = "0.13"

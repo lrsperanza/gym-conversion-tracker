@@ -1,16 +1,20 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { sql } from '../db/client';
 import { assertCanAccessAcademy, requireAuth } from '../http/auth';
-import { AppError, notFound } from '../http/errors';
+import { AppError, notFound, unauthorized } from '../http/errors';
 import { evoCredentialsSchema } from '../http/schemas';
-import type { AppBindings } from '../http/types';
+import type { AppBindings, SessionUser } from '../http/types';
 import { decryptEvoPassword, encryptEvoPassword } from '../security/evoCrypto';
+import { createEvoTicket, verifyEvoTicket } from '../security/evoTicket';
 
 export const evoRoutes = new Hono<AppBindings>();
 
-evoRoutes.use('*', requireAuth);
+type PayloadUser =
+	| { trustedTicket: true; user: { id: string } }
+	| { trustedTicket: false; user: SessionUser };
 
-evoRoutes.get('/credentials', async (c) => {
+evoRoutes.get('/credentials', requireAuth, async (c) => {
 	const user = c.get('user');
 	const [row] = await sql<Array<{ evo_username: string | null; evo_password_encrypted: string | null }>>`
 		SELECT "evo_username", "evo_password_encrypted"
@@ -24,7 +28,7 @@ evoRoutes.get('/credentials', async (c) => {
 	});
 });
 
-evoRoutes.put('/credentials', async (c) => {
+evoRoutes.put('/credentials', requireAuth, async (c) => {
 	const user = c.get('user');
 	const input = evoCredentialsSchema.parse(await c.req.json());
 	const encryptedPassword = encryptEvoPassword(input.password);
@@ -42,7 +46,7 @@ evoRoutes.put('/credentials', async (c) => {
 	return c.json({ configured: true, username: input.username });
 });
 
-evoRoutes.delete('/credentials', async (c) => {
+evoRoutes.delete('/credentials', requireAuth, async (c) => {
 	const user = c.get('user');
 	await sql`
 		UPDATE "gym-conversion-tracker"."users"
@@ -55,9 +59,17 @@ evoRoutes.delete('/credentials', async (c) => {
 	return c.json({ ok: true });
 });
 
-evoRoutes.get('/attendances/:id/payload', async (c) => {
+evoRoutes.post('/attendances/:id/ticket', requireAuth, async (c) => {
 	const user = c.get('user');
 	const attendanceId = c.req.param('id');
+	await assertAttendanceAccess(user, attendanceId);
+
+	return c.json(createEvoTicket(attendanceId, user.id));
+});
+
+evoRoutes.get('/attendances/:id/payload', async (c) => {
+	const attendanceId = c.req.param('id');
+	const payloadUser = await resolvePayloadUser(c, attendanceId);
 	const [attendance] = await sql<
 		Array<{
 			id: string;
@@ -93,11 +105,13 @@ evoRoutes.get('/attendances/:id/payload', async (c) => {
 		FROM "gym-conversion-tracker"."attendances" a
 		JOIN "gym-conversion-tracker"."academies" ac ON ac."id" = a."academy_id"
 		JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
-		JOIN "gym-conversion-tracker"."users" u ON u."id" = ${user.id}
+		JOIN "gym-conversion-tracker"."users" u ON u."id" = ${payloadUser.user.id}
 		WHERE a."id" = ${attendanceId}
 	`;
 	if (!attendance) throw notFound('Atendimento não encontrado.');
-	if (attendance.receptionist_id !== user.id) assertCanAccessAcademy(user, attendance.academy_id);
+	if (!payloadUser.trustedTicket && attendance.receptionist_id !== payloadUser.user.id) {
+		assertCanAccessAcademy(payloadUser.user, attendance.academy_id);
+	}
 
 	const missing = missingEvoFields(attendance);
 	if (missing.length) {
@@ -127,6 +141,33 @@ evoRoutes.get('/attendances/:id/payload', async (c) => {
 		}
 	});
 });
+
+async function resolvePayloadUser(c: Context<AppBindings>, attendanceId: string): Promise<PayloadUser> {
+	const ticket = bearerToken(c.req.header('authorization'));
+	if (ticket) {
+		const payload = verifyEvoTicket(ticket, attendanceId);
+		if (!payload) throw unauthorized('Ticket EVO inválido ou expirado.');
+		return { user: { id: payload.userId }, trustedTicket: true };
+	}
+
+	await requireAuth(c, async () => undefined);
+	return { user: c.get('user'), trustedTicket: false };
+}
+
+async function assertAttendanceAccess(user: SessionUser, attendanceId: string) {
+	const [attendance] = await sql<Array<{ academy_id: string; receptionist_id: string }>>`
+		SELECT "academy_id", "receptionist_id"
+		FROM "gym-conversion-tracker"."attendances"
+		WHERE "id" = ${attendanceId}
+	`;
+	if (!attendance) throw notFound('Atendimento não encontrado.');
+	if (attendance.receptionist_id !== user.id) assertCanAccessAcademy(user, attendance.academy_id);
+}
+
+function bearerToken(authorization?: string) {
+	const [scheme, token] = authorization?.split(' ') ?? [];
+	return scheme?.toLowerCase() === 'bearer' && token ? token : null;
+}
 
 /**
  * O resto dos dados é opcional: o que não vier o evo-puppeteer deixa em branco

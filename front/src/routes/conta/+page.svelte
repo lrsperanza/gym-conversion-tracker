@@ -29,7 +29,7 @@
 				evoCredentials = null;
 				return;
 			}
-			const credentials = await evoApi<EvoCredentialsStatus>('/api/evo/credentials');
+			const credentials = await api<EvoCredentialsStatus>('/api/evo/credentials');
 			evoCredentials = credentials;
 			evoCredentialsForm.username = credentials.username ?? '';
 		} catch (error) {
@@ -89,7 +89,7 @@
 		accountMessage = '';
 		evoBusy = true;
 		try {
-			const credentials = await evoApi<EvoCredentialsStatus>('/api/evo/credentials', {
+			const credentials = await api<EvoCredentialsStatus>('/api/evo/credentials', {
 				method: 'PUT',
 				body: JSON.stringify(evoCredentialsForm)
 			});
@@ -105,9 +105,17 @@
 
 	async function forgetEvoSession() {
 		accountMessage = '';
+		const username = evoCredentials?.username?.trim() || evoCredentialsForm.username.trim();
+		if (!username) {
+			accountMessage = 'Informe o usuário EVO antes de esquecer a sessão salva.';
+			return;
+		}
 		evoBusy = true;
 		try {
-			await evoApi<{ ok: boolean }>('/evo/perfil', { method: 'DELETE' });
+			await evoApi<{ ok: boolean }>('/evo/perfil', {
+				method: 'DELETE',
+				body: JSON.stringify({ username })
+			});
 			accountMessage = 'Sessão salva do EVO esquecida. As credenciais continuam cadastradas.';
 		} catch (error) {
 			accountMessage = errorMessage(error);
@@ -120,7 +128,7 @@
 		accountMessage = '';
 		evoBusy = true;
 		try {
-			await evoApi<{ ok: boolean }>('/api/evo/credentials', { method: 'DELETE' });
+			await api<{ ok: boolean }>('/api/evo/credentials', { method: 'DELETE' });
 			evoCredentials = { configured: false, username: null };
 			evoCredentialsForm.password = '';
 			accountMessage = 'Credenciais EVO removidas.';
@@ -217,16 +225,22 @@
 		</div>
 
 		{#if evoLoading}
-			<p class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+			<p
+				class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
+			>
 				Verificando bridge EVO...
 			</p>
 		{:else if !evoBridgeAvailable}
-			<p class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+			<p
+				class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900"
+			>
 				Bridge EVO indisponível. Inicie o bridge para salvar credenciais e limpar a sessão do
 				navegador.
 			</p>
 		{:else}
-			<p class="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900">
+			<p
+				class="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900"
+			>
 				{#if evoCredentials?.configured}
 					Credenciais configuradas para {evoCredentials.username}.
 				{:else}

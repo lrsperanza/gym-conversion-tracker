@@ -15,7 +15,10 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 const LOCAL_APP_URL: &str = "http://localhost:4000";
 const LOCAL_HEALTH_HOST: &str = "127.0.0.1";
 const LOCAL_HEALTH_PORT: u16 = 4000;
-const DEFAULT_BACK_URL: &str = "https://gym-conversion-tracker-437354431924.southamerica-east1.run.app";
+const DEFAULT_BACK_URL: &str =
+    "https://gym-conversion-tracker-437354431924.southamerica-east1.run.app";
+const DEFAULT_FRONT_URL: &str = "https://nice-pebble-04842d70f.7.azurestaticapps.net";
+const RUNTIME_MARKER: &[u8] = b"front-remote-v1";
 const PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.tar.zst"));
 
 #[derive(Clone, Default)]
@@ -57,7 +60,11 @@ fn main() {
 }
 
 fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String> {
-    set_splash_message(&app, "Procurando aplicativo local em localhost:4000...", false);
+    set_splash_message(
+        &app,
+        "Procurando aplicativo local em localhost:4000...",
+        false,
+    );
     if local_bridge_ready() {
         open_main_window(&app, LOCAL_APP_URL)?;
         close_splash(&app);
@@ -72,7 +79,10 @@ fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String
     set_splash_message(&app, "Iniciando bridge local na porta 4000...", false);
     let bridge = spawn_bridge(&runtime_dir, &log_dir).map_err(|error| error.to_string())?;
     {
-        let mut current = state.0.lock().map_err(|_| "Falha ao controlar o bridge.".to_string())?;
+        let mut current = state
+            .0
+            .lock()
+            .map_err(|_| "Falha ao controlar o bridge.".to_string())?;
         *current = Some(bridge);
     }
 
@@ -84,13 +94,13 @@ fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String
 
     let details = read_log_tail(&log_dir.join("bridge.err.log")).unwrap_or_default();
     let message = if details.trim().is_empty() {
-        "Bridge local nao respondeu. Abrindo o app na Cloud Run...".to_string()
+        "Bridge local nao respondeu. Abrindo o front remoto...".to_string()
     } else {
-        format!("Bridge local nao respondeu. Abrindo o app na Cloud Run...\n\n{details}")
+        format!("Bridge local nao respondeu. Abrindo o front remoto...\n\n{details}")
     };
     set_splash_message(&app, &message, true);
     thread::sleep(Duration::from_millis(1200));
-    open_main_window(&app, configured_back_url())?;
+    open_main_window(&app, configured_front_url())?;
     close_splash(&app);
     Ok(())
 }
@@ -99,9 +109,11 @@ fn extract_payload() -> std::io::Result<PathBuf> {
     let runtime_dir = runtime_dir();
     let marker = runtime_dir.join(".complete");
     let bridge = runtime_dir.join("bridge.exe");
-    let front_index = runtime_dir.join("front").join("index.html");
 
-    if marker.exists() && bridge.exists() && front_index.exists() {
+    if marker.exists()
+        && bridge.exists()
+        && fs::read(&marker).ok().as_deref() == Some(RUNTIME_MARKER)
+    {
         return Ok(runtime_dir);
     }
 
@@ -113,7 +125,7 @@ fn extract_payload() -> std::io::Result<PathBuf> {
     let decoder = zstd::stream::read::Decoder::new(PAYLOAD)?;
     let mut archive = tar::Archive::new(decoder);
     archive.unpack(&runtime_dir)?;
-    fs::write(marker, b"ok")?;
+    fs::write(marker, RUNTIME_MARKER)?;
 
     Ok(runtime_dir)
 }
@@ -133,7 +145,7 @@ fn spawn_bridge(runtime_dir: &Path, log_dir: &Path) -> std::io::Result<Child> {
         .current_dir(runtime_dir)
         .env("BRIDGE_PORT", "4000")
         .env("BACK_URL", configured_back_url())
-        .env("FRONT_DIST", runtime_dir.join("front"))
+        .env("FRONT_URL", configured_front_url())
         .env("EVO_PERFIS_DIR", perfis)
         .env("EVO_SCREENSHOTS_DIR", screenshots)
         .stdin(Stdio::null())
@@ -152,6 +164,10 @@ fn spawn_bridge(runtime_dir: &Path, log_dir: &Path) -> std::io::Result<Child> {
 
 fn configured_back_url() -> &'static str {
     option_env!("SKYFIT_BACK_URL").unwrap_or(DEFAULT_BACK_URL)
+}
+
+fn configured_front_url() -> &'static str {
+    option_env!("SKYFIT_FRONT_URL").unwrap_or(DEFAULT_FRONT_URL)
 }
 
 fn wait_for_local_bridge(timeout: Duration) -> bool {
@@ -189,14 +205,26 @@ fn local_bridge_ready() -> bool {
 
 fn open_main_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     let parsed = tauri::Url::parse(url).map_err(|error| error.to_string())?;
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
         .title("Skyfit EVO")
         .inner_size(1280.0, 860.0)
         .min_inner_size(960.0, 640.0)
         .center()
         .build()
         .map_err(|error| error.to_string())?;
+
+    if devtools_enabled() {
+        window.open_devtools();
+    }
+
     Ok(())
+}
+
+fn devtools_enabled() -> bool {
+    matches!(
+        env::var("SKYFIT_DEVTOOLS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
 }
 
 fn close_splash(app: &tauri::AppHandle) {

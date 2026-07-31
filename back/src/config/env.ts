@@ -20,7 +20,8 @@ const rawEnvSchema = z.object({
 	AWS_SMTP_PASSWORD: z.string().default(''),
 	AWS_SMTP_FROM_EMAIL: z.string().email().or(z.literal('')).default(''),
 	AWS_SMTP_FROM_NAME: z.string().default('Skyfit'),
-	EVO_CRED_KEY: z.string().default('')
+	EVO_CRED_KEY: z.string().default(''),
+	EVO_TICKET_KEY: z.string().default('')
 });
 
 const parsed = rawEnvSchema.parse(Bun.env);
@@ -48,7 +49,8 @@ export const env = {
 		fromName: parsed.AWS_SMTP_FROM_NAME
 	},
 	evo: {
-		credentialKey: parsed.EVO_CRED_KEY
+		credentialKey: parsed.EVO_CRED_KEY,
+		ticketKey: parsed.EVO_TICKET_KEY || parsed.EVO_CRED_KEY
 	}
 } as const;
 

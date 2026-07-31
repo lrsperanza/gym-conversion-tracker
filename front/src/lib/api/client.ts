@@ -1,3 +1,5 @@
+import { getBridgeBaseUrl } from './bridge';
+
 const API_URL = (import.meta.env.PUBLIC_API_URL || 'http://localhost:3000').replace(/\/$/, '');
 
 export class ApiError extends Error {
@@ -11,7 +13,7 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-	const response = await fetch(`${API_URL}${path}`, {
+	const response = await fetch(`${await apiBaseUrl()}${path}`, {
 		...options,
 		credentials: 'include',
 		headers: {
@@ -30,6 +32,10 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 	}
 
 	return payload as T;
+}
+
+async function apiBaseUrl() {
+	return (await getBridgeBaseUrl()) === '' ? '' : API_URL;
 }
 
 export function money(valueCents?: number | null) {
