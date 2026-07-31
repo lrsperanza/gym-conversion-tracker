@@ -10,6 +10,7 @@ const rawEnvSchema = z.object({
 		.enum(['true', 'false'])
 		.default('false')
 		.transform((value) => value === 'true'),
+	PORT: z.coerce.number().int().positive().optional(),
 	API_PORT: z.coerce.number().int().positive().default(3000),
 	CORS_ORIGIN: z.string().default('http://localhost:5173'),
 	APP_URL: z.string().default('http://localhost:5173'),
@@ -18,7 +19,8 @@ const rawEnvSchema = z.object({
 	AWS_SMTP_USERNAME: z.string().default(''),
 	AWS_SMTP_PASSWORD: z.string().default(''),
 	AWS_SMTP_FROM_EMAIL: z.string().email().or(z.literal('')).default(''),
-	AWS_SMTP_FROM_NAME: z.string().default('Skyfit')
+	AWS_SMTP_FROM_NAME: z.string().default('Skyfit'),
+	EVO_CRED_KEY: z.string().default('')
 });
 
 const parsed = rawEnvSchema.parse(Bun.env);
@@ -26,7 +28,7 @@ const parsed = rawEnvSchema.parse(Bun.env);
 export const DB_SCHEMA = 'gym-conversion-tracker';
 
 export const env = {
-	port: parsed.API_PORT,
+	port: parsed.PORT ?? parsed.API_PORT,
 	corsOrigin: parsed.CORS_ORIGIN,
 	appUrl: parsed.APP_URL.replace(/\/$/, ''),
 	postgres: {
@@ -44,6 +46,9 @@ export const env = {
 		password: parsed.AWS_SMTP_PASSWORD,
 		fromEmail: parsed.AWS_SMTP_FROM_EMAIL,
 		fromName: parsed.AWS_SMTP_FROM_NAME
+	},
+	evo: {
+		credentialKey: parsed.EVO_CRED_KEY
 	}
 } as const;
 

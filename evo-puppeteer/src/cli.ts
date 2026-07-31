@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
-import puppeteer, { type Browser, type Page } from 'puppeteer';
+import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import { DEFAULT_PROSPECT, DEFAULT_UNIDADE, type Prospect } from './config.ts';
 import { sleep } from './dom.ts';
 import {
@@ -21,6 +21,7 @@ const OPTIONS = {
   nascimento: { type: 'string' },
   genero: { type: 'string' },
   cep: { type: 'string' },
+  ddi: { type: 'string' },
   telefone: { type: 'string' },
   email: { type: 'string' },
   'tipo-visita': { type: 'string' },
@@ -46,6 +47,7 @@ Credenciais (padrão: variáveis EVO_USUARIO / EVO_SENHA do .env):
 Dados do cadastro:
   --nome, --sobrenome, --cpf, --nascimento, --genero, --cep,
   --telefone, --email, --tipo-visita, --como-conheceu
+  --ddi <código>             país do telefone, sem o "+" (padrão: 55)
 
 Execução:
   --timeout <ms>             espera máxima por elemento (padrão: 30000)
@@ -101,6 +103,8 @@ export async function run(argv = process.argv.slice(2)): Promise<void> {
     nascimento: values.nascimento ?? DEFAULT_PROSPECT.nascimento,
     genero: values.genero ?? DEFAULT_PROSPECT.genero,
     cep: values.cep ?? DEFAULT_PROSPECT.cep,
+    // Sem --ddi o código do país sai do próprio telefone.
+    ddi: values.ddi,
     telefone: values.telefone ?? DEFAULT_PROSPECT.telefone,
     email: values.email ?? DEFAULT_PROSPECT.email,
     tipoVisita: values['tipo-visita'] ?? DEFAULT_PROSPECT.tipoVisita,

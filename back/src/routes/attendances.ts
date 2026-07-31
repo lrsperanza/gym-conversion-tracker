@@ -59,7 +59,10 @@ attendanceRoutes.get('/attendances', async (c) => {
 	if (academyId) assertCanAccessAcademy(user, academyId);
 
 	const rows = await sql`
-		SELECT a.*, l."name" AS lead_name, l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
+		SELECT a.*, l."name" AS lead_name, l."surname" AS lead_surname, l."cpf" AS lead_cpf,
+			l."birth_date" AS lead_birth_date, l."gender" AS lead_gender, l."cep" AS lead_cep,
+			l."visit_type" AS lead_visit_type, l."how_found_us" AS lead_how_found_us,
+			l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
 			next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for
 		FROM "gym-conversion-tracker"."attendances" a
 		JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
@@ -125,8 +128,8 @@ attendanceRoutes.post('/attendances', async (c) => {
 			? await tx`SELECT "id" FROM "gym-conversion-tracker"."leads" WHERE "id" = ${input.leadId}`
 			: await tx<Array<{ id: string }>>`
 				INSERT INTO "gym-conversion-tracker"."leads"
-					("name", "normalized_name", "email", "whatsapp_country_code", "whatsapp_area_code", "whatsapp_number", "whatsapp_e164", "notes")
-				VALUES (${input.lead.name}, ${normalizeName(input.lead.name)}, ${email}, ${phone?.countryCode ?? '55'}, ${phone?.areaCode ?? '16'}, ${phone?.number ?? null}, ${phone?.e164 ?? null}, ${input.lead.notes ?? null})
+					("name", "normalized_name", "surname", "cpf", "birth_date", "gender", "cep", "visit_type", "how_found_us", "email", "whatsapp_country_code", "whatsapp_area_code", "whatsapp_number", "whatsapp_e164", "notes")
+				VALUES (${input.lead.name}, ${normalizeName(input.lead.name)}, ${input.lead.surname ?? null}, ${input.lead.cpf ?? null}, ${input.lead.birthDate ?? null}::date, ${input.lead.gender ?? null}, ${input.lead.cep ?? null}, ${input.lead.visitType ?? null}, ${input.lead.howFoundUs ?? null}, ${email}, ${phone?.countryCode ?? '55'}, ${phone?.areaCode ?? '16'}, ${phone?.number ?? null}, ${phone?.e164 ?? null}, ${input.lead.notes ?? null})
 				RETURNING "id"
 			`;
 		if (!lead) throw notFound('Lead não encontrado.');
@@ -244,6 +247,13 @@ attendanceRoutes.get('/leads', async (c) => {
 		SELECT
 			l."id",
 			l."name",
+			l."surname",
+			l."cpf",
+			l."birth_date",
+			l."gender",
+			l."cep",
+			l."visit_type",
+			l."how_found_us",
 			l."email",
 			l."whatsapp_e164",
 			l."notes",
@@ -386,6 +396,13 @@ attendanceRoutes.patch('/leads/:id', async (c) => {
 		}
 	}
 	if ('notes' in input) updates.notes = input.notes ?? null;
+	if ('surname' in input) updates.surname = input.surname ?? null;
+	if ('cpf' in input) updates.cpf = input.cpf ?? null;
+	if ('birthDate' in input) updates.birth_date = input.birthDate ?? null;
+	if ('gender' in input) updates.gender = input.gender ?? null;
+	if ('cep' in input) updates.cep = input.cep ?? null;
+	if ('visitType' in input) updates.visit_type = input.visitType ?? null;
+	if ('howFoundUs' in input) updates.how_found_us = input.howFoundUs ?? null;
 	if (!Object.keys(updates).length) throw badRequest('Nada para atualizar.');
 
 	if (updates.whatsapp_e164 || updates.email) {

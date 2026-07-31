@@ -43,8 +43,8 @@ adminRoutes.post('/academies', async (c) => {
 
 	const input = academyInputSchema.parse(await c.req.json());
 	const [academy] = await sql<Array<{ id: string }>>`
-		INSERT INTO "gym-conversion-tracker"."academies" ("name", "city", "active")
-		VALUES (${input.name}, ${input.city ?? null}, ${input.active ?? true})
+		INSERT INTO "gym-conversion-tracker"."academies" ("name", "city", "evo_unit_name", "active")
+		VALUES (${input.name}, ${input.city ?? null}, ${input.evoUnitName ?? null}, ${input.active ?? true})
 		RETURNING *
 	`;
 	if (!academy) throw new Error('Falha ao criar academia.');
@@ -64,6 +64,7 @@ adminRoutes.patch('/academies/:id', async (c) => {
 		SET
 			"name" = COALESCE(${input.name ?? null}, "name"),
 			"city" = COALESCE(${input.city ?? null}, "city"),
+			"evo_unit_name" = COALESCE(${input.evoUnitName ?? null}, "evo_unit_name"),
 			"active" = COALESCE(${input.active ?? null}, "active"),
 			"updated_at" = now()
 		WHERE "id" = ${id}

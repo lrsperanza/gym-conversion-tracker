@@ -1,0 +1,22 @@
+node_modules
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Git
+.git
+.gitignore
+
+# Output
+dist
+coverage
+
+# Local/deploy helpers
+deploy.ps1
+*.log
+
+# Tests
+*.test.ts

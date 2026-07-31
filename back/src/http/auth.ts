@@ -8,6 +8,20 @@ import { createSecretToken, hashToken } from '../security/crypto';
 const COOKIE_NAME = 'gct_session';
 const SESSION_DAYS = 14;
 
+function isSecureRequest(c: Context<AppBindings>) {
+	const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim();
+	return (forwardedProto ?? new URL(c.req.url).protocol.replace(':', '')) === 'https';
+}
+
+function sessionCookieOptions(c: Context<AppBindings>) {
+	const secure = isSecureRequest(c);
+	return {
+		secure,
+		sameSite: secure ? 'None' : 'Lax',
+		path: '/'
+	} as const;
+}
+
 export async function createSession(c: Context<AppBindings>, userId: string) {
 	const token = createSecretToken();
 	const tokenHash = await hashToken(token);
@@ -21,10 +35,8 @@ export async function createSession(c: Context<AppBindings>, userId: string) {
 	if (!session) throw new Error('Falha ao criar sessão.');
 
 	setCookie(c, COOKIE_NAME, token, {
+		...sessionCookieOptions(c),
 		httpOnly: true,
-		secure: new URL(c.req.url).protocol === 'https:',
-		sameSite: 'Lax',
-		path: '/',
 		expires: expiresAt
 	});
 
@@ -40,7 +52,7 @@ export async function revokeSession(c: Context<AppBindings>) {
 			WHERE "id" = ${sessionId}
 		`;
 	}
-	deleteCookie(c, COOKIE_NAME, { path: '/' });
+	deleteCookie(c, COOKIE_NAME, sessionCookieOptions(c));
 }
 
 export const requireAuth: MiddlewareHandler<AppBindings> = async (c, next) => {

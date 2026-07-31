@@ -46,7 +46,7 @@
 	let adminMessage = $state('');
 	let adminSavingId = $state('');
 	let userCreating = $state(false);
-	let academyForm = $state({ id: '', name: '', city: '', active: true });
+	let academyForm = $state({ id: '', name: '', city: '', evoUnitName: '', active: true });
 	let userForm = $state({ ...defaultUserForm });
 	let professorForm = $state({
 		academyId: '',
@@ -126,6 +126,7 @@
 			const payload = {
 				name: academyForm.name,
 				city: academyForm.city || null,
+				evoUnitName: academyForm.evoUnitName || null,
 				active: academyForm.active
 			};
 			if (academyForm.id) {
@@ -141,7 +142,7 @@
 				});
 				adminMessage = 'Academia criada.';
 			}
-			academyForm = { id: '', name: '', city: '', active: true };
+			academyForm = { id: '', name: '', city: '', evoUnitName: '', active: true };
 			await loadAdminData();
 		} catch (error) {
 			adminMessage = errorMessage(error);
@@ -153,6 +154,7 @@
 			id: academy.id,
 			name: academy.name,
 			city: academy.city ?? '',
+			evoUnitName: academy.evo_unit_name ?? '',
 			active: academy.active
 		};
 	}
@@ -450,6 +452,12 @@
 							bind:value={academyForm.city}
 						/></label
 					>
+					<label class="text-sm font-medium text-slate-700"
+						>Unidade no EVO<input
+							class="mt-1 w-full rounded-2xl border-slate-300"
+							bind:value={academyForm.evoUnitName}
+						/></label
+					>
 					<label class="flex items-center gap-2 text-sm font-medium text-slate-700"
 						><input
 							class="rounded border-slate-300"
@@ -467,7 +475,7 @@
 							<p class="text-sm">
 								<strong>{academy.name}</strong><br />{academy.city ?? 'Sem cidade'} · {academy.active
 									? 'Ativa'
-									: 'Inativa'}
+									: 'Inativa'}{academy.evo_unit_name ? ` · EVO: ${academy.evo_unit_name}` : ''}
 							</p>
 							<button
 								class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold"

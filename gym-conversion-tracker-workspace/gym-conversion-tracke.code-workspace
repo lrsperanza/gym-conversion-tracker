@@ -8,6 +8,15 @@
 		},
 		{
 			"path": "../front"
+		},
+		{
+			"path": "../evo-bridge"
+		},
+		{
+			"path": "../evo-puppeteer"
+		},
+		{
+			"path": "../desktop"
 		}
 	],
 	"settings": {}

@@ -211,6 +211,12 @@ test/integration/bun-types/fixture/bun.lock
 .claude/worktrees
 src/runtime/bake/generated.ts
 /target/
+/desktop/dist/
+/desktop/src-tauri/target/
+/desktop/src-tauri/payload/*
+!/desktop/src-tauri/payload/.gitkeep
+/desktop/src-tauri/icons/*
+!/desktop/src-tauri/icons/.gitkeep
 # Heap snapshots, profiler output, and core dumps can contain secrets from
 # process memory (env vars, tokens). Never commit them, compressed or not.
 *.heapsnapshot

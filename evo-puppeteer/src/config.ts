@@ -12,10 +12,13 @@ export const SELECTORS = {
   },
   unidade: {
     modal: 'modal-login-multiunidade',
-    dialog: 'mat-dialog-container',
-    card: '[class*="card-login"]',
-    confirmar: 'mat-dialog-container button',
+    /** O modal já apareceu como componente próprio e como mat-dialog; a busca
+     * usa a primeira raiz que estiver visível na tela. */
+    raizes: ['modal-login-multiunidade', 'mat-dialog-container', '.cdk-overlay-container'],
+    /** Rótulos aceitos no botão que confirma a unidade escolhida. */
+    confirmar: ['entrar', 'confirmar', 'acessar', 'selecionar', 'continuar'],
   },
+  sessaoAtiva: 'button#atalhoNovoCadastro',
   novoCadastro: 'button#atalhoNovoCadastro',
   cadastro: {
     nome: `${DRAWER} input#nome`,
@@ -23,6 +26,8 @@ export const SELECTORS = {
     cpf: `${DRAWER} input#cpf`,
     nascimento: `${DRAWER} input#dtNascimento`,
     cep: `${DRAWER} input#cep`,
+    /** O telefone vem partido em dois: um select para o DDI e o número com DDD. */
+    ddi: `${DRAWER} evo-phone mat-select`,
     telefone: `${DRAWER} evo-phone input[placeholder*="Celular"]`,
     email: `${DRAWER} input#email`,
     genero: 'sexo',
@@ -31,17 +36,20 @@ export const SELECTORS = {
   },
 } as const;
 
+/** Só o nome é obrigatório: o que vier em branco fica intocado no EVO. */
 export type Prospect = {
   nome: string;
-  sobrenome: string;
-  cpf: string;
-  nascimento: string;
-  genero: string;
-  cep: string;
-  telefone: string;
-  email: string;
-  tipoVisita: string;
-  comoConheceu: string;
+  sobrenome?: string;
+  cpf?: string;
+  nascimento?: string;
+  genero?: string;
+  cep?: string;
+  /** Só os dígitos do código do país; sem isso o telefone é lido como brasileiro. */
+  ddi?: string;
+  telefone?: string;
+  email?: string;
+  tipoVisita?: string;
+  comoConheceu?: string;
 };
 
 export const DEFAULT_PROSPECT: Prospect = {

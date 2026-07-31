@@ -8,14 +8,17 @@ import { adminRoutes } from './routes/admin';
 import { attendanceRoutes } from './routes/attendances';
 import { authRoutes } from './routes/auth';
 import { dashboardRoutes } from './routes/dashboard';
+import { evoRoutes } from './routes/evo';
 
 const app = new Hono<AppBindings>();
+const allowedOrigins = env.corsOrigin.split(',').map((origin) => origin.trim());
+const allowAllOrigins = allowedOrigins.includes('*');
 
 app.use('*', logger());
 app.use(
 	'*',
 	cors({
-		origin: env.corsOrigin.split(',').map((origin) => origin.trim()),
+		origin: (origin) => (allowAllOrigins ? origin : allowedOrigins.includes(origin) ? origin : undefined),
 		credentials: true,
 		allowHeaders: ['Content-Type'],
 		allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']
@@ -50,6 +53,7 @@ app.get('/openapi.json', (c) =>
 
 app.route('/api/auth', authRoutes);
 app.route('/api/admin', adminRoutes);
+app.route('/api/evo', evoRoutes);
 app.route('/api', attendanceRoutes);
 app.route('/api', dashboardRoutes);
 

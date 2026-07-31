@@ -3,17 +3,17 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./index.ts"
+  },
   "bin": {
     "evo-puppeteer": "index.ts"
   },
   "scripts": {
     "start": "bun run index.ts",
-    "typecheck": "tsc --noEmit",
-    "postinstall": "puppeteer browsers install chrome"
+    "typecheck": "tsc --noEmit"
   },
-  "trustedDependencies": [
-    "puppeteer"
-  ],
   "devDependencies": {
     "@types/bun": "latest"
   },
@@ -21,6 +21,6 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "puppeteer": "^25.4.0"
+    "puppeteer-core": "^25.4.0"
   }
 }

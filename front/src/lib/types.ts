@@ -11,6 +11,7 @@ export type Academy = {
 	id: string;
 	name: string;
 	city?: string | null;
+	evo_unit_name?: string | null;
 	active: boolean;
 };
 
@@ -39,6 +40,13 @@ export type Attendance = {
 	academy_id: string;
 	lead_id: string;
 	lead_name: string;
+	lead_surname?: string | null;
+	lead_cpf?: string | null;
+	lead_birth_date?: string | null;
+	lead_gender?: string | null;
+	lead_cep?: string | null;
+	lead_visit_type?: string | null;
+	lead_how_found_us?: string | null;
 	lead_email?: string | null;
 	whatsapp_e164?: string | null;
 	receptionist_name: string;
@@ -54,6 +62,13 @@ export type Attendance = {
 export type LeadSummary = {
 	id: string;
 	name: string;
+	surname?: string | null;
+	cpf?: string | null;
+	birth_date?: string | null;
+	gender?: string | null;
+	cep?: string | null;
+	visit_type?: string | null;
+	how_found_us?: string | null;
 	email?: string | null;
 	whatsapp_e164?: string | null;
 	notes?: string | null;
@@ -83,6 +98,22 @@ export type LossReason = {
 	category: string;
 	requires_description: boolean;
 	active: boolean;
+};
+
+export type EvoCredentialsStatus = {
+	configured: boolean;
+	username: string | null;
+};
+
+export type EvoJobStatus = {
+	id: string;
+	status: 'queued' | 'running' | 'completed' | 'failed';
+	message: string;
+	result?: Record<string, string>;
+	error?: string;
+	screenshot?: string;
+	createdAt: string;
+	updatedAt: string;
 };
 
 export type DashboardSummary = {

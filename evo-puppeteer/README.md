@@ -31,6 +31,11 @@ O navegador abre visível (não headless), maximizado, e executa:
 4. preenchimento de nome, sobrenome, CPF, data de nascimento, gênero, CEP,
    telefone celular, e-mail, tipo de visita e como conheceu.
 
+O telefone entra em dois campos: o EVO tem um select de DDI ao lado do número,
+que aceita apenas DDD + número. Um telefone em formato internacional
+(`+5516996123434`) é dividido entre os dois; use `--ddi` quando quiser mandar o
+código do país separado.
+
 No fim, os valores lidos de volta do formulário são exibidos em tabela e o
 navegador fica aberto até você apertar `Ctrl+C`.
 
@@ -45,6 +50,7 @@ bun start --help
 | `--usuario`, `--senha` | credenciais (sobrescrevem o `.env`) |
 | `--unidade` | texto usado para localizar a unidade no modal |
 | `--nome`, `--sobrenome`, `--cpf`, `--nascimento`, `--genero`, `--cep`, `--telefone`, `--email`, `--tipo-visita`, `--como-conheceu` | dados do cadastro |
+| `--ddi` | código do país do telefone, sem o `+` (padrão: deduzido do número) |
 | `--timeout <ms>` | espera máxima por elemento (padrão 30000) |
 | `--slow-mo <ms>` | atraso entre ações, útil para acompanhar visualmente |
 | `--headless` | roda sem interface |

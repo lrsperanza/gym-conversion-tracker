@@ -18,6 +18,7 @@ export const photoSchema = z
 export const academyInputSchema = z.object({
 	name: z.string().min(2),
 	city: z.string().optional().nullable(),
+	evoUnitName: z.string().optional().nullable(),
 	active: z.boolean().optional()
 });
 
@@ -75,18 +76,35 @@ export const confirmEmailSchema = z.object({
 	token: z.string().min(20)
 });
 
+const evoLeadFields = {
+	surname: z.string().optional().nullable(),
+	cpf: z.string().optional().nullable(),
+	birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+	gender: z.string().optional().nullable(),
+	cep: z.string().optional().nullable(),
+	visitType: z.string().optional().nullable(),
+	howFoundUs: z.string().optional().nullable()
+};
+
 export const leadInputSchema = z.object({
 	name: z.string().min(2),
 	email: z.string().email().optional().nullable(),
 	phone: phoneSchema.optional().nullable(),
-	notes: z.string().optional().nullable()
+	notes: z.string().optional().nullable(),
+	...evoLeadFields
 });
 
 export const leadPatchSchema = z.object({
 	name: z.string().min(2).optional(),
 	email: z.string().email().optional().nullable(),
 	phone: phoneSchema.optional().nullable(),
-	notes: z.string().optional().nullable()
+	notes: z.string().optional().nullable(),
+	...evoLeadFields
+});
+
+export const evoCredentialsSchema = z.object({
+	username: z.string().email(),
+	password: z.string().min(1)
 });
 
 export const attendancePatchSchema = z.object({

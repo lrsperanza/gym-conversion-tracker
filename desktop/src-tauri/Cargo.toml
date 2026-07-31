@@ -1,0 +1,18 @@
+[package]
+name = "skyfit-evo-desktop"
+version = "1.0.0"
+description = "Skyfit EVO desktop launcher"
+authors = ["Skyfit"]
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tar = "0.4"
+zstd = "0.13"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+tar = "0.4"
+zstd = "0.13"
