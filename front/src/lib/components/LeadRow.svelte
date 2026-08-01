@@ -1,14 +1,9 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { api, dateTime } from '$lib/api/client';
+	import LeadEventsTimeline from '$lib/components/LeadEventsTimeline.svelte';
 	import LeadNameEditor from '$lib/components/LeadNameEditor.svelte';
-	import {
-		errorMessage,
-		eventTypeLabel,
-		isImminent,
-		parsePhone,
-		statusLabel
-	} from '$lib/helpers';
+	import { errorMessage, eventTypeLabel, isImminent, parsePhone, statusLabel } from '$lib/helpers';
 	import type { AttendanceEventType, LeadSummary } from '$lib/types';
 
 	type Mode = 'scheduled' | 'search';
@@ -227,14 +222,15 @@
 					placeholder="Notas do lead"
 					bind:value={editingValue}
 					disabled={editingBusy}
-					{@attach autofocus}
-				></textarea>
+					{@attach autofocus}></textarea>
 			{:else}
 				<input
 					class="min-w-0 flex-1 rounded-xl border-slate-300 text-sm"
 					type={editing === 'email' ? 'email' : 'text'}
 					inputmode={editing === 'phone' ? 'numeric' : undefined}
-					placeholder={editing === 'phone' ? 'DDD + número (ex.: 16999998888)' : 'email@exemplo.com'}
+					placeholder={editing === 'phone'
+						? 'DDD + número (ex.: 16999998888)'
+						: 'email@exemplo.com'}
 					bind:value={editingValue}
 					disabled={editingBusy}
 					{@attach autofocus}
@@ -296,6 +292,8 @@
 		{/if}
 	{/if}
 
+	<LeadEventsTimeline leadId={lead.id} count={lead.events_count} />
+
 	{#if scheduledControlsVisible}
 		<form
 			class="mt-4 flex flex-wrap items-end gap-2 rounded-2xl bg-slate-50 p-3"
@@ -348,7 +346,9 @@
 	{/if}
 
 	{#if message}
-		<p class="mt-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900">
+		<p
+			class="mt-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900"
+		>
 			{message}
 		</p>
 	{/if}

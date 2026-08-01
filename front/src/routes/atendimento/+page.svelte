@@ -3,6 +3,7 @@
 	import { api, dateTime } from '$lib/api/client';
 	import Empty from '$lib/components/Empty.svelte';
 	import EventFormModal from '$lib/components/EventFormModal.svelte';
+	import LeadEventsTimeline from '$lib/components/LeadEventsTimeline.svelte';
 	import LeadNameEditor from '$lib/components/LeadNameEditor.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import ProfessorFormModal from '$lib/components/ProfessorFormModal.svelte';
@@ -507,6 +508,12 @@
 									{/if}
 								</div>
 							{/if}
+
+							<LeadEventsTimeline
+								leadId={attendance.lead_id}
+								count={attendance.lead_events_count}
+								label="Eventos do lead"
+							/>
 						</article>
 					{/each}
 				</div>

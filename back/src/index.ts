@@ -15,6 +15,13 @@ const allowedOrigins = env.corsOrigin.split(',').map((origin) => origin.trim());
 const allowAllOrigins = allowedOrigins.includes('*');
 
 app.use('*', logger());
+
+// The host switcher probes this endpoint from any front origin, so it stays outside the allow list.
+app.use(
+	'/api/check-connection',
+	cors({ origin: (origin) => origin || '*', allowMethods: ['GET', 'OPTIONS'] })
+);
+
 app.use(
 	'*',
 	cors({
@@ -29,11 +36,21 @@ app.onError(handleError);
 
 app.get('/health', (c) => c.json({ ok: true, service: 'gym-conversion-tracker-back' }));
 
+app.get('/api/check-connection', (c) =>
+	c.json({
+		ok: true,
+		service: 'gym-conversion-tracker-back',
+		port: env.port,
+		time: new Date().toISOString()
+	})
+);
+
 app.get('/openapi.json', (c) =>
 	c.json({
 		openapi: '3.1.0',
 		info: { title: 'Gym Conversion Tracker API', version: '0.0.1' },
 		paths: {
+			'/api/check-connection': { get: { summary: 'Verifica se o host da API responde (sem autenticação)' } },
 			'/api/auth/login': { post: { summary: 'Login com cookie HttpOnly' } },
 			'/api/auth/me': { get: { summary: 'Sessão atual' } },
 			'/api/admin/academies': { get: { summary: 'Lista academias' }, post: { summary: 'Cria academia' } },

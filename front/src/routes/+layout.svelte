@@ -6,6 +6,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { ApiError, api } from '$lib/api/client';
 	import { canAccessAdmin, canAccessDashboard } from '$lib/auth/roles';
+	import ApiHostBadge from '$lib/components/ApiHostBadge.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage } from '$lib/helpers';
 	import { setSessionContext, type SessionState } from '$lib/session';
@@ -241,4 +242,6 @@
 			{@render children()}
 		</main>
 	{/if}
+
+	<ApiHostBadge />
 </div>

@@ -9,7 +9,7 @@ import {
 	attendancePatchSchema,
 	leadPatchSchema
 } from '../http/schemas';
-import type { AppBindings } from '../http/types';
+import type { AppBindings, SessionUser } from '../http/types';
 import { audit } from '../services/audit';
 
 export const attendanceRoutes = new Hono<AppBindings>();
@@ -63,7 +63,21 @@ attendanceRoutes.get('/attendances', async (c) => {
 			l."birth_date" AS lead_birth_date, l."gender" AS lead_gender, l."cep" AS lead_cep,
 			l."visit_type" AS lead_visit_type, l."how_found_us" AS lead_how_found_us,
 			l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
-			next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for
+			next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for,
+			(
+				SELECT count(*)::int
+				FROM "gym-conversion-tracker"."attendance_events" lead_event
+				JOIN "gym-conversion-tracker"."attendances" lead_attendance ON lead_attendance."id" = lead_event."attendance_id"
+				WHERE lead_attendance."lead_id" = a."lead_id"
+					AND (
+						${hasAnyRole(user, ['ADMIN', 'SOCIO'])} = true
+						OR lead_attendance."receptionist_id" = ${user.id}
+						OR lead_attendance."academy_id" IN (
+							SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+							WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+						)
+					)
+			) AS lead_events_count
 		FROM "gym-conversion-tracker"."attendances" a
 		JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
 		JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
@@ -265,7 +279,21 @@ attendanceRoutes.get('/leads', async (c) => {
 			last_attendance."started_at" AS last_started_at,
 			next_schedule."attendance_id" AS next_attendance_id,
 			next_schedule."type" AS next_event_type,
-			next_schedule."scheduled_for" AS next_scheduled_for
+			next_schedule."scheduled_for" AS next_scheduled_for,
+			(
+				SELECT count(*)::int
+				FROM "gym-conversion-tracker"."attendance_events" lead_event
+				JOIN "gym-conversion-tracker"."attendances" lead_attendance ON lead_attendance."id" = lead_event."attendance_id"
+				WHERE lead_attendance."lead_id" = l."id"
+					AND (
+						${canSeeAllLeads} = true
+						OR lead_attendance."receptionist_id" = ${user.id}
+						OR lead_attendance."academy_id" IN (
+							SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+							WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+						)
+					)
+			) AS events_count
 		FROM "gym-conversion-tracker"."leads" l
 		LEFT JOIN LATERAL (
 			SELECT a."id", a."status", a."started_at", ac."name" AS academy_name
@@ -350,32 +378,61 @@ attendanceRoutes.get('/leads', async (c) => {
 	return c.json({ leads: rows });
 });
 
+attendanceRoutes.get('/leads/:id/events', async (c) => {
+	const user = c.get('user');
+	const id = c.req.param('id');
+	await assertCanAccessLead(user, id);
+	const canSeeAllLeads = hasAnyRole(user, ['ADMIN', 'SOCIO']);
+
+	const events = await sql`
+		SELECT
+			e."id",
+			e."attendance_id",
+			e."type",
+			e."scheduled_for",
+			e."description",
+			e."created_at",
+			u."name" AS actor_name,
+			ac."name" AS academy_name,
+			a."status" AS attendance_status,
+			s."amount_cents",
+			s."label_snapshot",
+			lr."label" AS loss_reason_label,
+			EXISTS (
+				SELECT 1
+				FROM "gym-conversion-tracker"."attendance_events" cancel_event
+				WHERE cancel_event."attendance_id" = e."attendance_id"
+					AND cancel_event."type" = 'SCHEDULE_CANCELLED'
+					AND cancel_event."created_at" > e."created_at"
+			) AS schedule_cancelled
+		FROM "gym-conversion-tracker"."attendance_events" e
+		JOIN "gym-conversion-tracker"."attendances" a ON a."id" = e."attendance_id"
+		JOIN "gym-conversion-tracker"."academies" ac ON ac."id" = a."academy_id"
+		JOIN "gym-conversion-tracker"."users" u ON u."id" = e."actor_user_id"
+		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."event_id" = e."id"
+		LEFT JOIN "gym-conversion-tracker"."attendance_losses" al ON al."event_id" = e."id"
+		LEFT JOIN "gym-conversion-tracker"."loss_reasons" lr ON lr."id" = al."loss_reason_id"
+		WHERE a."lead_id" = ${id}
+			AND (
+				${canSeeAllLeads} = true
+				OR a."receptionist_id" = ${user.id}
+				OR a."academy_id" IN (
+					SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+					WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+				)
+			)
+		ORDER BY e."created_at" DESC
+		LIMIT 200
+	`;
+
+	return c.json({ events });
+});
+
 attendanceRoutes.patch('/leads/:id', async (c) => {
 	const user = c.get('user');
 	const id = c.req.param('id');
 	const input = leadPatchSchema.parse(await c.req.json());
-
-	const [lead] = await sql<Array<{ id: string }>>`
-		SELECT "id" FROM "gym-conversion-tracker"."leads" WHERE "id" = ${id}
-	`;
-	if (!lead) throw notFound('Lead não encontrado.');
-
-	if (!hasAnyRole(user, ['ADMIN', 'SOCIO'])) {
-		const reachable = await sql`
-			SELECT 1
-			FROM "gym-conversion-tracker"."attendances" a
-			WHERE a."lead_id" = ${id}
-				AND (
-					a."receptionist_id" = ${user.id}
-					OR a."academy_id" IN (
-						SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
-						WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
-					)
-				)
-			LIMIT 1
-		`;
-		if (!reachable.length) throw forbidden('Você não tem acesso a este lead.');
-	}
+	await assertCanAccessLead(user, id);
 
 	const updates: Record<string, string | null> = {};
 	if (input.name) {
@@ -531,6 +588,29 @@ attendanceRoutes.post('/attendances/:id/events', async (c) => {
 	await audit({ actorUserId: user.id, action: 'attendance.event.create', entityType: 'attendance', entityId: attendanceId, payload: input, c });
 	return c.json({ event: result }, 201);
 });
+
+async function assertCanAccessLead(user: SessionUser, leadId: string) {
+	const [lead] = await sql<Array<{ id: string }>>`
+		SELECT "id" FROM "gym-conversion-tracker"."leads" WHERE "id" = ${leadId}
+	`;
+	if (!lead) throw notFound('Lead não encontrado.');
+	if (hasAnyRole(user, ['ADMIN', 'SOCIO'])) return;
+
+	const reachable = await sql`
+		SELECT 1
+		FROM "gym-conversion-tracker"."attendances" a
+		WHERE a."lead_id" = ${leadId}
+			AND (
+				a."receptionist_id" = ${user.id}
+				OR a."academy_id" IN (
+					SELECT "academy_id" FROM "gym-conversion-tracker"."user_academy_roles"
+					WHERE "user_id" = ${user.id} AND "active" = true AND "academy_id" IS NOT NULL
+				)
+			)
+		LIMIT 1
+	`;
+	if (!reachable.length) throw forbidden('Você não tem acesso a este lead.');
+}
 
 async function resolveSale(outcomeTypeId: string | null, manualLabel?: string, manualValueCents?: number) {
 	if (!outcomeTypeId) {

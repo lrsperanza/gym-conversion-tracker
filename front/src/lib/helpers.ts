@@ -20,6 +20,9 @@ export function statusLabel(status: string) {
 
 export function eventTypeLabel(type?: AttendanceEventType | string | null) {
 	const labels: Record<string, string> = {
+		LEAD_CREATED: 'Lead criado',
+		TOUR_RECEPTIONIST: 'Atendimento aberto (recepção)',
+		TOUR_PROFESSOR: 'Atendimento aberto (professor)',
 		SALE: 'Venda',
 		LOSS: 'Perda',
 		EXPERIMENTAL_CLASS_SCHEDULED: 'Aula experimental agendada',
@@ -33,6 +36,25 @@ export function eventTypeLabel(type?: AttendanceEventType | string | null) {
 	return type ? (labels[type] ?? type) : 'Evento';
 }
 
+export function eventToneClass(type?: AttendanceEventType | string | null) {
+	const tones: Record<string, string> = {
+		SALE: 'bg-emerald-50 text-emerald-800 ring-emerald-200',
+		LOSS: 'bg-red-50 text-red-800 ring-red-200',
+		EXPERIMENTAL_CLASS_SCHEDULED: 'bg-sky-50 text-sky-800 ring-sky-200',
+		FOLLOW_UP_SCHEDULED: 'bg-sky-50 text-sky-800 ring-sky-200',
+		EXPERIMENTAL_CLASS_NOW: 'bg-indigo-50 text-indigo-800 ring-indigo-200',
+		SCHEDULE_CANCELLED: 'bg-amber-50 text-amber-900 ring-amber-200',
+		REOPEN: 'bg-violet-50 text-violet-800 ring-violet-200'
+	};
+	return type
+		? (tones[type] ?? 'bg-slate-100 text-slate-700 ring-slate-200')
+		: 'bg-slate-100 text-slate-700 ring-slate-200';
+}
+
+export function isScheduledEventType(type?: AttendanceEventType | string | null) {
+	return type === 'EXPERIMENTAL_CLASS_SCHEDULED' || type === 'FOLLOW_UP_SCHEDULED';
+}
+
 export function isImminent(scheduledFor?: string | null, now = new Date()) {
 	if (!scheduledFor) return false;
 	const scheduledAt = new Date(scheduledFor).getTime();
@@ -40,7 +62,10 @@ export function isImminent(scheduledFor?: string | null, now = new Date()) {
 	return scheduledAt - now.getTime() <= 15 * 60 * 1000;
 }
 
-export function isQueueVisible(attendance: Pick<Attendance, 'status' | 'next_scheduled_for'>, now = new Date()) {
+export function isQueueVisible(
+	attendance: Pick<Attendance, 'status' | 'next_scheduled_for'>,
+	now = new Date()
+) {
 	if (attendance.status === 'FINALIZED') return false;
 	if (attendance.status !== 'PENDING' || !attendance.next_scheduled_for) return true;
 	return isImminent(attendance.next_scheduled_for, now);

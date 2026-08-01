@@ -25,6 +25,9 @@ export type Professor = {
 };
 
 export type AttendanceEventType =
+	| 'LEAD_CREATED'
+	| 'TOUR_RECEPTIONIST'
+	| 'TOUR_PROFESSOR'
 	| 'SALE'
 	| 'LOSS'
 	| 'EXPERIMENTAL_CLASS_SCHEDULED'
@@ -34,6 +37,22 @@ export type AttendanceEventType =
 	| 'OTHER'
 	| 'REOPEN'
 	| 'NOTE';
+
+export type LeadEvent = {
+	id: string;
+	attendance_id: string;
+	type: AttendanceEventType;
+	scheduled_for?: string | null;
+	description?: string | null;
+	created_at: string;
+	actor_name: string;
+	academy_name?: string | null;
+	attendance_status: Attendance['status'];
+	amount_cents?: number | null;
+	label_snapshot?: string | null;
+	loss_reason_label?: string | null;
+	schedule_cancelled: boolean;
+};
 
 export type Attendance = {
 	id: string;
@@ -57,6 +76,7 @@ export type Attendance = {
 	closed_at?: string | null;
 	next_event_type?: AttendanceEventType | null;
 	next_scheduled_for?: string | null;
+	lead_events_count?: number | null;
 };
 
 export type LeadSummary = {
@@ -81,6 +101,7 @@ export type LeadSummary = {
 	next_attendance_id?: string | null;
 	next_event_type?: AttendanceEventType | null;
 	next_scheduled_for?: string | null;
+	events_count?: number | null;
 };
 
 export type OutcomeType = {
