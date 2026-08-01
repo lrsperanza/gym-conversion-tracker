@@ -15,6 +15,22 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", payload_dir.display());
     create_payload_archive(&payload_dir, &archive_path).expect("failed to create payload archive");
+
+    let archive = fs::read(&archive_path).expect("failed to read payload archive");
+    println!(
+        "cargo:rustc-env=SKYFIT_PAYLOAD_FINGERPRINT={:016x}",
+        fingerprint(&archive)
+    );
+}
+
+/// FNV-1a over the payload archive, used to invalidate the runtime extracted on the user's machine.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn create_payload_archive(payload_dir: &Path, archive_path: &Path) -> io::Result<()> {

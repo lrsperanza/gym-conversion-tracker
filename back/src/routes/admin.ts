@@ -232,11 +232,11 @@ adminRoutes.post('/professors', async (c) => {
 	const input = professorInputSchema.parse(await c.req.json());
 	if (!canManageProfessor(user, input.academyId, 'create')) throw forbidden();
 
-	const phone = normalizePhone(input.phone);
+	const phone = input.phone?.number ? normalizePhone(input.phone) : null;
 	const [professor] = await sql<Array<{ id: string }>>`
 		INSERT INTO "gym-conversion-tracker"."professors"
 			("academy_id", "name", "normalized_name", "email", "whatsapp_country_code", "whatsapp_area_code", "whatsapp_number", "whatsapp_e164", "photo_mime", "photo_base64")
-		VALUES (${input.academyId}, ${input.name}, ${normalizeName(input.name)}, ${normalizeEmail(input.email)}, ${phone.countryCode}, ${phone.areaCode}, ${phone.number}, ${phone.e164}, ${input.photo?.mime ?? null}, ${input.photo?.base64 ?? null})
+		VALUES (${input.academyId}, ${input.name}, ${normalizeName(input.name)}, ${normalizeEmail(input.email)}, ${phone?.countryCode ?? '55'}, ${phone?.areaCode ?? '16'}, ${phone?.number ?? null}, ${phone?.e164 ?? null}, ${input.photo?.mime ?? null}, ${input.photo?.base64 ?? null})
 		RETURNING *
 	`;
 	if (!professor) throw new Error('Falha ao criar professor.');

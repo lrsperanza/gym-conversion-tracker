@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import { sql } from '../db/client';
-import { assertCanAccessAcademy, hasAnyRole, requireAuth } from '../http/auth';
+import { assertCanAccessAcademy, hasAnyRole, requireAnyRole, requireAuth } from '../http/auth';
 import { dashboardQuerySchema } from '../http/schemas';
 import type { AppBindings } from '../http/types';
 
 export const dashboardRoutes = new Hono<AppBindings>();
 
 dashboardRoutes.use('*', requireAuth);
+dashboardRoutes.use('*', requireAnyRole('ADMIN', 'SOCIO', 'GERENTE_REGIONAL'));
 
 dashboardRoutes.get('/dashboard/summary', async (c) => {
 	const user = c.get('user');

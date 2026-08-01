@@ -5,6 +5,7 @@
 	import EventFormModal from '$lib/components/EventFormModal.svelte';
 	import LeadNameEditor from '$lib/components/LeadNameEditor.svelte';
 	import Notice from '$lib/components/Notice.svelte';
+	import ProfessorFormModal from '$lib/components/ProfessorFormModal.svelte';
 	import {
 		errorMessage,
 		eventTypeLabel,
@@ -29,6 +30,7 @@
 	};
 
 	const DRAFT_KEY = 'attendance-quick-draft';
+	const NEW_PROFESSOR = '__new__';
 	const { session } = getSessionContext();
 
 	let academies = $state.raw<Academy[]>([]);
@@ -44,6 +46,7 @@
 	let editingValue = $state('');
 	let editingBusy = $state(false);
 	let modalAttendance = $state.raw<Attendance | null>(null);
+	let professorModalAttendance = $state.raw<Attendance | null>(null);
 	let now = $state(new Date());
 	let activeAcademies = $derived(academies.filter((academy) => academy.active));
 	let visibleQueue = $derived(queue.filter((attendance) => isQueueVisible(attendance, now)));
@@ -97,6 +100,11 @@
 		}
 	}
 
+	async function loadProfessors() {
+		const data = await api<{ professors: Professor[] }>('/api/admin/professors');
+		professors = data.professors;
+	}
+
 	async function loadQueue() {
 		if (!session.user) return;
 		queueLoading = true;
@@ -140,6 +148,10 @@
 
 	function professorsForAcademy(academyId: string) {
 		return professors.filter((professor) => professor.academy_id === academyId && professor.active);
+	}
+
+	function academyName(academyId: string) {
+		return academies.find((academy) => academy.id === academyId)?.name ?? null;
 	}
 
 	function autofocus(node: HTMLElement) {
@@ -200,22 +212,56 @@
 		}
 	}
 
+	async function patchProfessor(attendance: Attendance) {
+		await api<{ attendance: Attendance }>(`/api/attendances/${attendance.id}`, {
+			method: 'PATCH',
+			body: JSON.stringify({
+				professorId: editingValue || null,
+				presenter: editingValue ? 'PROFESSOR' : 'RECEPTIONIST'
+			})
+		});
+	}
+
 	async function saveProfessor(attendance: Attendance) {
 		editingBusy = true;
 		attendanceMessage = '';
 		try {
-			await api<{ attendance: Attendance }>(`/api/attendances/${attendance.id}`, {
-				method: 'PATCH',
-				body: JSON.stringify({
-					professorId: editingValue || null,
-					presenter: editingValue ? 'PROFESSOR' : 'RECEPTIONIST'
-				})
-			});
+			await patchProfessor(attendance);
 			cancelEdit();
 			attendanceMessage = 'Professor atualizado.';
 			await loadQueue();
 		} catch (error) {
 			attendanceMessage = errorMessage(error);
+		} finally {
+			editingBusy = false;
+		}
+	}
+
+	function handleProfessorChange(attendance: Attendance) {
+		if (editingValue === NEW_PROFESSOR) {
+			professorModalAttendance = attendance;
+			editingValue = attendance.professor_id ?? '';
+			return;
+		}
+		void saveProfessor(attendance);
+	}
+
+	async function handleProfessorCreated(professor: Professor) {
+		if (!professorModalAttendance) return;
+		const attendance = professorModalAttendance;
+		editingBusy = true;
+		attendanceMessage = '';
+		try {
+			await loadProfessors();
+			editingValue = professor.id;
+			await patchProfessor(attendance);
+			professorModalAttendance = null;
+			cancelEdit();
+			await loadQueue();
+			attendanceMessage = 'Professor cadastrado e vinculado ao atendimento.';
+		} catch (error) {
+			attendanceMessage = errorMessage(error);
+			throw error;
 		} finally {
 			editingBusy = false;
 		}
@@ -398,7 +444,7 @@
 										<select
 											class="min-w-0 flex-1 rounded-xl border-slate-300 text-base"
 											bind:value={editingValue}
-											onchange={() => void saveProfessor(attendance)}
+											onchange={() => handleProfessorChange(attendance)}
 											disabled={editingBusy}
 											{@attach autofocus}
 										>
@@ -406,6 +452,7 @@
 											{#each professorsForAcademy(attendance.academy_id) as professor (professor.id)}
 												<option value={professor.id}>{professor.name}</option>
 											{/each}
+											<option value={NEW_PROFESSOR}>+ Cadastrar novo professor</option>
 										</select>
 										<button
 											type="button"
@@ -476,4 +523,11 @@
 	{lossReasons}
 	onClose={() => (modalAttendance = null)}
 	onSaved={loadQueue}
+/>
+
+<ProfessorFormModal
+	academyId={professorModalAttendance?.academy_id ?? null}
+	academyName={professorModalAttendance ? academyName(professorModalAttendance.academy_id) : null}
+	onClose={() => (professorModalAttendance = null)}
+	onCreated={handleProfessorCreated}
 />

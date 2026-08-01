@@ -18,7 +18,8 @@ const LOCAL_HEALTH_PORT: u16 = 4000;
 const DEFAULT_BACK_URL: &str =
     "https://gym-conversion-tracker-437354431924.southamerica-east1.run.app";
 const DEFAULT_FRONT_URL: &str = "https://nice-pebble-04842d70f.7.azurestaticapps.net";
-const RUNTIME_MARKER: &[u8] = b"front-remote-v1";
+const RUNTIME_MARKER: &[u8] =
+    concat!("front-remote-v1:", env!("SKYFIT_PAYLOAD_FINGERPRINT")).as_bytes();
 const PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.tar.zst"));
 
 #[derive(Clone, Default)]

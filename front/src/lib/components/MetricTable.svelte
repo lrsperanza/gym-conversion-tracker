@@ -5,6 +5,14 @@
 	import Empty from './Empty.svelte';
 
 	let { title, rows } = $props<{ title: string; rows: MetricRow[] }>();
+
+	function revenuePerVisit(row: MetricRow) {
+		return row.attendances ? row.revenue_cents / row.attendances : 0;
+	}
+
+	function revenuePerSale(row: MetricRow) {
+		return row.converted ? row.revenue_cents / row.converted : 0;
+	}
 </script>
 
 <section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
@@ -17,8 +25,10 @@
 						<th class="py-2 pr-4">Nome</th>
 						<th class="py-2 pr-4">Atend.</th>
 						<th class="py-2 pr-4">Conv.</th>
-						<th class="py-2 pr-4">Taxa</th>
-						<th class="py-2">Receita</th>
+						<th class="py-2 pr-4">Taxa de conv.</th>
+						<th class="py-2 pr-4">Receita</th>
+						<th class="py-2 pr-4">Receita/visita</th>
+						<th class="py-2">Receita/venda</th>
 					</tr>
 				</thead>
 				<tbody class="divide-y divide-slate-100">
@@ -36,7 +46,9 @@
 								</div>
 								<span class="text-xs text-slate-500">{percent(row.conversionRate)}</span>
 							</td>
-							<td class="py-3">{money(row.revenue_cents)}</td>
+							<td class="py-3 pr-4">{money(row.revenue_cents)}</td>
+							<td class="py-3 pr-4">{money(revenuePerVisit(row))}</td>
+							<td class="py-3">{money(revenuePerSale(row))}</td>
 						</tr>
 					{/each}
 				</tbody>

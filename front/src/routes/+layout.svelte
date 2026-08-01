@@ -5,7 +5,7 @@
 	import './layout.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import { ApiError, api } from '$lib/api/client';
-	import { canAccessAdmin } from '$lib/auth/roles';
+	import { canAccessAdmin, canAccessDashboard } from '$lib/auth/roles';
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage } from '$lib/helpers';
 	import { setSessionContext, type SessionState } from '$lib/session';
@@ -28,9 +28,12 @@
 	let navLinks = $derived.by(() => {
 		const links: NavLink[] = [
 			{ href: '/atendimento', label: 'Atendimento' },
-			{ href: '/leads', label: 'Leads' },
-			{ href: '/dashboard', label: 'Dashboard' }
+			{ href: '/leads', label: 'Leads' }
 		];
+
+		if (canAccessDashboard(session.user)) {
+			links.push({ href: '/dashboard', label: 'Dashboard' });
+		}
 
 		if (canAccessAdmin(session.user)) {
 			links.push({ href: '/administracao', label: 'Administração' });

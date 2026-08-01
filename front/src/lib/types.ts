@@ -20,7 +20,7 @@ export type Professor = {
 	academy_id: string;
 	name: string;
 	email?: string | null;
-	whatsapp_e164: string;
+	whatsapp_e164?: string | null;
 	active: boolean;
 };
 

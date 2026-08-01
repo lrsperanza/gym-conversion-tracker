@@ -40,7 +40,7 @@ export const professorInputSchema = z.object({
 	academyId: z.string().uuid(),
 	name: z.string().min(2),
 	email: z.string().email().optional().nullable(),
-	phone: phoneSchema,
+	phone: phoneSchema.optional().nullable(),
 	photo: photoSchema
 });
 
