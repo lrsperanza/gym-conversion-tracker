@@ -146,7 +146,10 @@ function scheduleRelaunch(nextExe: string, currentPid?: number) {
 		stdout: 'ignore',
 		stderr: 'ignore',
 		stdin: 'ignore',
-		windowsHide: true
+		windowsHide: true,
+		// Default escaping turns the inner quotes into \", which cmd.exe reads literally:
+		// `start` then tries to launch a bare backslash instead of the exe.
+		windowsVerbatimArguments: true
 	});
 }
 

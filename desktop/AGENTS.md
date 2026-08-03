@@ -51,7 +51,7 @@ cd desktop
 
 `build.ps1` valida `bun`/`cargo`/`cargo tauri` v2, instala deps de `evo-puppeteer` e `evo-bridge`, roda typecheck, compila o `bridge.exe` no payload, gera ícones, faz `cargo tauri build` com `SKYFIT_BACK_URL`/`SKYFIT_FRONT_URL` no ambiente e copia o resultado para `desktop/dist/Skyfit-EVO-{version}.exe` (+ zip + `LEIA-ME.txt`).
 
-`publish.ps1` lê a versão de `tauri.conf.json` **e** `Cargo.toml` (precisam bater), oferece bump, sincroniza os dois arquivos, opcionalmente chama `build.ps1` e então roda `bun src/scripts/publish-desktop.ts <exe>` **de dentro de `back/`** — ou seja, quem publica usa `back/.env` (`AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY`, `DESKTOP_BLOB_CONTAINER`, `DESKTOP_BUILD_PREFIX`), **não** o `desktop/.env`. O nome do arquivo precisa casar `{DESKTOP_BUILD_PREFIX}{semver}.exe`, senão o script recusa.
+`publish.ps1` lê a versão de `tauri.conf.json` **e** `Cargo.toml` (precisam bater), oferece bump, sincroniza os dois arquivos, pergunta se deve buildar (a menos que venha `-Build`/`-NoBuild`/`-NoPrompt`) e então roda `bun src/scripts/publish-desktop.ts <exe>` **de dentro de `back/`** — ou seja, quem publica usa `back/.env` (`AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY`, `DESKTOP_BLOB_CONTAINER`, `DESKTOP_BUILD_PREFIX`), **não** o `desktop/.env`. O nome do arquivo precisa casar `{DESKTOP_BUILD_PREFIX}{semver}.exe`, senão o script recusa.
 
 Não há CI: build e publish são manuais.
 

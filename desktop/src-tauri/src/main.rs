@@ -222,12 +222,25 @@ fn maybe_apply_update(app: &tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     }
 
+    let destination = installed_exe_path(&build.version);
+    // A build published under a version its binary does not report (a relabelled exe)
+    // would download itself, relaunch, and find the same "update" again forever.
+    if is_current_exe(&destination) {
+        report_update_problem(
+            app,
+            &format!(
+                "A build {} publicada é a que já está em execução (o binário reporta {APP_VERSION})",
+                build.version
+            ),
+        );
+        return Ok(false);
+    }
+
     set_splash_message(
         app,
         &format!("Baixando atualização {}...", build.version),
         false,
     );
-    let destination = installed_exe_path(&build.version);
     download_build(&build, &destination)?;
     // The shortcut is cosmetic and install_app retries it on every launch, so a failure
     // here must not abort the update and leave the app stuck on the splash.
@@ -370,7 +383,6 @@ fn schedule_relaunch(next_exe: &Path, current_pid: u32) -> Result<(), String> {
 
     let mut process = Command::new("cmd");
     process
-        .args(["/C", &command])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -378,10 +390,17 @@ fn schedule_relaunch(next_exe: &Path, current_pid: u32) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // Command::arg escapes the inner quotes as \", which cmd.exe does not understand:
+        // `start` ends up trying to launch a bare backslash instead of the exe. raw_arg
+        // hands the line over untouched.
+        process.raw_arg(format!("/C {command}"));
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         const DETACHED_PROCESS: u32 = 0x00000008;
         process.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
     }
+
+    #[cfg(not(windows))]
+    process.args(["/C", &command]);
 
     process.spawn().map_err(|error| error.to_string())?;
     Ok(())
@@ -405,6 +424,16 @@ fn prune_old_installs(current: &Path) {
         {
             let _ = fs::remove_file(path);
         }
+    }
+}
+
+fn is_current_exe(path: &Path) -> bool {
+    let Ok(current) = env::current_exe() else {
+        return false;
+    };
+    match (current.canonicalize(), path.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => current == path,
     }
 }
 

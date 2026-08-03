@@ -1,6 +1,6 @@
 [package]
 name = "skyfit-evo-desktop"
-version = "1.0.4"
+version = "1.0.9"
 description = "Skyfit EVO desktop launcher"
 authors = ["Skyfit"]
 edition = "2021"

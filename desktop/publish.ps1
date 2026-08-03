@@ -132,6 +132,31 @@ function Import-DotEnv {
     return $values
 }
 
+function Find-LatestDesktopExe {
+    param([string]$DistDir)
+
+    if (-not (Test-Path -LiteralPath $DistDir -PathType Container)) {
+        return $null
+    }
+
+    $bestFile = $null
+    $bestParts = $null
+    foreach ($file in Get-ChildItem -LiteralPath $DistDir -File -Filter "Skyfit-EVO-*.exe") {
+        if ($file.Name -notmatch '^Skyfit-EVO-(?<version>\d+\.\d+\.\d+)\.exe$') { continue }
+        $parts = Get-SemVerParts -Version $Matches.version
+        $isNewer = $null -eq $bestParts -or
+            $parts.Major -gt $bestParts.Major -or
+            ($parts.Major -eq $bestParts.Major -and $parts.Minor -gt $bestParts.Minor) -or
+            ($parts.Major -eq $bestParts.Major -and $parts.Minor -eq $bestParts.Minor -and $parts.Patch -gt $bestParts.Patch)
+        if ($isNewer) {
+            $bestFile = $file
+            $bestParts = $parts
+        }
+    }
+
+    return $bestFile
+}
+
 function Resolve-VersionChoice {
     param(
         [string]$Current,
@@ -195,27 +220,38 @@ if ($Version -ne $CurrentVersion) {
     Write-Step "Atualizando versão $CurrentVersion -> $Version"
     Set-DesktopVersion -ConfigPath $ConfigPath -CargoPath $CargoPath -Version $Version
     Write-Host "Atualizado tauri.conf.json e Cargo.toml." -ForegroundColor Green
-    if (-not $Build -and -not $NoBuild -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($ExePath)) {
-        $Build = $true
-        Write-Host "Build será executado automaticamente (versão nova)." -ForegroundColor DarkGray
-    }
 } else {
     Write-Step "Mantendo versão $Version"
 }
 
-$shouldBuild = [bool]$Build -and -not $NoBuild
-if (-not $shouldBuild -and -not $NoBuild -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($ExePath)) {
-    $exeCandidate = Join-Path $DistDir "Skyfit-EVO-$Version.exe"
-    if (-not (Test-Path -LiteralPath $exeCandidate -PathType Leaf)) {
-        $reply = Read-Host "Não achei $exeCandidate. Buildar agora? [Y/n]"
-        if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^(y|yes|s|sim)$') {
-            $shouldBuild = $true
-        }
-    }
+$ExePathProvided = -not [string]::IsNullOrWhiteSpace($ExePath)
+if (-not $ExePathProvided) {
+    $ExePath = Join-Path $DistDir "Skyfit-EVO-$Version.exe"
 }
 
-if ($NoBuild) {
+$shouldBuild = $false
+if ($Build) {
+    $shouldBuild = $true
+} elseif ($NoBuild) {
     Write-Step "Pulando build (-NoBuild); publicando o exe existente"
+} elseif ($NoPrompt) {
+    Write-Step "Pulando build (-NoPrompt sem -Build); publicando o exe existente"
+} else {
+    $exeExists = Test-Path -LiteralPath $ExePath -PathType Leaf
+    if ($exeExists) {
+        Write-Host ""
+        Write-Host "Exe encontrado: $ExePath" -ForegroundColor DarkGray
+        $reply = Read-Host "Buildar agora? [y/N]"
+        $shouldBuild = $reply -match '^(y|yes|s|sim)$'
+    } else {
+        Write-Host ""
+        Write-Host "Exe não encontrado: $ExePath" -ForegroundColor Yellow
+        $reply = Read-Host "Buildar agora? [Y/n]"
+        $shouldBuild = [string]::IsNullOrWhiteSpace($reply) -or $reply -match '^(y|yes|s|sim)$'
+    }
+    if (-not $shouldBuild) {
+        Write-Step "Pulando build; publicando o exe existente"
+    }
 }
 
 if ($shouldBuild) {
@@ -231,12 +267,30 @@ if ($shouldBuild) {
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($ExePath)) {
-    $ExePath = Join-Path $DistDir "Skyfit-EVO-$Version.exe"
+if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
+    $latestExe = $null
+    if (-not $ExePathProvided) {
+        $latestExe = Find-LatestDesktopExe -DistDir $DistDir
+    }
+
+    if ($null -ne $latestExe -and -not $NoPrompt) {
+        Write-Host ""
+        Write-Host "Não achei exe da versão $Version." -ForegroundColor Yellow
+        Write-Host "Latest em dist: $($latestExe.Name)" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "ATENÇÃO: renomear um exe antigo gera uma build quebrada." -ForegroundColor Red
+        Write-Host "O binário continua reportando a versão antiga, então todo launcher vê" -ForegroundColor Red
+        Write-Host "a build como desatualizada e fica baixando e reiniciando em loop." -ForegroundColor Red
+        $reply = Read-Host "Reutilizar mesmo assim como Skyfit-EVO-$Version.exe e publicar? [y/N]"
+        if ($reply -match '^(y|yes|s|sim)$') {
+            Copy-Item -LiteralPath $latestExe.FullName -Destination $ExePath -Force
+            Write-Host "Copiado $($latestExe.Name) -> $(Split-Path -Leaf $ExePath)" -ForegroundColor Green
+        }
+    }
 }
 
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
-    throw "Executable not found: $ExePath. Rode com build (padrão após bump) ou passe -ExePath."
+    throw "Executable not found: $ExePath. Rode com -Build, passe -ExePath, ou reutilize o latest em dist."
 }
 
 Write-Step "Publishing $ExePath to Azure Blob Storage"
