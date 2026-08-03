@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Sobe back (:3000), evo-bridge (:4000, servindo o build do front) e o Puppeteer do EVO.
@@ -146,14 +146,36 @@ function Save-PidFile {
 function Assert-PortFree {
     param([int]$Port, [string]$Name)
     $client = New-Object System.Net.Sockets.TcpClient
+    $inUse = $false
     try {
         $async = $client.BeginConnect('127.0.0.1', $Port, $null, $null)
-        if ($async.AsyncWaitHandle.WaitOne(300) -and $client.Connected) {
-            throw "Porta $Port ($Name) já está em uso. Encerre o processo que a ocupa e tente de novo."
-        }
+        $inUse = $async.AsyncWaitHandle.WaitOne(300) -and $client.Connected
     }
     catch [System.Net.Sockets.SocketException] { }
     finally { $client.Close() }
+    if (-not $inUse) { return }
+
+    $owners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+    $alive = @()
+    foreach ($ownerPid in $owners) {
+        $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+        if ($proc) { $alive += "$($proc.ProcessName) (pid $ownerPid)" }
+    }
+    if ($alive.Count -gt 0) {
+        throw "Porta $Port ($Name) já está em uso por $($alive -join ', '). Encerre o processo (ou rode .\stop-all.ps1) e tente de novo."
+    }
+
+    # Socket órfão: o dono morreu, mas outro processo herdou o handle do socket.
+    # O caso conhecido aqui é o Chrome do EVO, aberto destacado pelo bridge —
+    # fechar a janela dele é o que libera a porta.
+    $evoChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match '--user-data-dir=.*[\\/]perfis[\\/]' -and $_.CommandLine -notmatch '--type=' } |
+        Select-Object -First 1
+    if ($evoChrome) {
+        throw "Porta $Port ($Name) está presa por um socket órfão: o Chrome do EVO (pid $($evoChrome.ProcessId)), aberto pelo bridge anterior, herdou o socket e mantém a porta ocupada. Feche a janela do Chrome do EVO (salve o cadastro no EVO antes, se houver) e tente de novo."
+    }
+    throw "Porta $Port ($Name) está presa por um socket órfão: o processo dono (pid $($owners -join ', ')) já morreu, mas outro processo herdou o socket. Reinicie o PC para liberar a porta."
 }
 
 function Ensure-Deps {

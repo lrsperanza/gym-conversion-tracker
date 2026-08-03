@@ -26,6 +26,9 @@ import {
 /** Depois disso, seguir na tela de login significa credencial recusada. */
 const GRACA_LOGIN_MS = 12_000;
 
+/** Carência para uma sessão guardada se revelar antes de acreditar na tela de login. */
+const GRACA_SESSAO_MS = 5_000;
+
 /** Quanto esperar a lista de unidades renderizar antes de desistir. */
 const LISTA_MS = 5_000;
 
@@ -74,11 +77,17 @@ export async function login(page: Page, credenciais: Credenciais, timeout: numbe
   log(`abrindo ${LOGIN_URL}`);
   await gotoComRetry(page, LOGIN_URL, timeout);
 
-  await waitFor(page, SELECTORS.login.usuario, timeout);
+  const estado = await detectarEstadoSessao(page, timeout);
+  if (estado !== 'login') {
+    log('sessão EVO já está ativa — pulando login');
+    return;
+  }
+
   log(`autenticando como ${credenciais.usuario}`);
-  await fill(page, SELECTORS.login.usuario, credenciais.usuario, timeout);
-  await fill(page, SELECTORS.login.senha, credenciais.senha, timeout);
-  await click(page, SELECTORS.login.entrar, timeout);
+  const destino = await preencherLoginAteRedirecionar(page, credenciais, timeout);
+  if (destino === 'ativa' || destino === 'unidade') {
+    log('a tela de login redirecionou — sessão já estava ativa');
+  }
 }
 
 export async function garantirSessao(
@@ -103,20 +112,74 @@ export async function garantirSessao(
 	}
 
 	log(`autenticando como ${credenciais.usuario}`);
-	await fill(page, SELECTORS.login.usuario, credenciais.usuario, timeout);
-	await fill(page, SELECTORS.login.senha, credenciais.senha, timeout);
-	await click(page, SELECTORS.login.entrar, timeout);
+	const destino = await preencherLoginAteRedirecionar(page, credenciais, timeout);
+	if (destino === 'ativa') {
+		log('a tela de login redirecionou para a home — sessão já estava ativa');
+		return;
+	}
+	if (destino === 'unidade') {
+		log('a tela de login redirecionou para a seleção de unidade — sessão já estava ativa');
+	}
 	await escolherUnidade(page, unidade, timeout);
 	await aguardarSessaoAtiva(page, timeout);
 }
 
+type DestinoSessao = 'entrou' | 'ativa' | 'unidade' | 'interrompido';
+
+/**
+ * Corre o preenchimento do login contra o redirect que a tela de autenticação
+ * faz sozinha quando já existe sessão guardada. Se a home (ou o modal de
+ * unidades) aparecer no meio do caminho, os campos somem da tela e insistir
+ * neles travaria até o timeout — o redirect é o recado de que o resto do
+ * login é desnecessário.
+ */
+async function preencherLoginAteRedirecionar(
+	page: Page,
+	credenciais: Credenciais,
+	timeout: number,
+): Promise<DestinoSessao> {
+	let observando = true;
+	const redirecionamento = (async (): Promise<DestinoSessao> => {
+		while (observando) {
+			if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
+			if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
+			await sleep(POLL_INTERVAL);
+		}
+		return 'interrompido';
+	})();
+
+	const preenchendo = (async (): Promise<DestinoSessao> => {
+		await fill(page, SELECTORS.login.usuario, credenciais.usuario, timeout);
+		await fill(page, SELECTORS.login.senha, credenciais.senha, timeout);
+		await click(page, SELECTORS.login.entrar, timeout);
+		return 'entrou';
+	})();
+	// O lado abandonado pelo redirect morre no próprio prazo; engolir o
+	// desfecho para não derrubar o processo com rejeição sem tratamento.
+	preenchendo.catch(() => undefined);
+
+	try {
+		return await Promise.race([preenchendo, redirecionamento]);
+	} finally {
+		observando = false;
+	}
+}
+
+/**
+ * A tela de autenticação exibe o formulário mesmo com sessão guardada e só
+ * então redireciona para a home — acreditar nele de cara faz o fluxo esperar
+ * por campos que o redirect acabou de tirar da tela. Por isso a home e o
+ * modal de unidades têm prioridade, e o formulário só é levado a sério depois
+ * da carência.
+ */
 async function detectarEstadoSessao(page: Page, timeout: number): Promise<EstadoSessao> {
 	const deadline = Date.now() + timeout;
+	const limiteLogin = Date.now() + Math.min(GRACA_SESSAO_MS, timeout);
 	const avisar = aviso('o EVO terminar de carregar');
 	do {
-		if (await visivel(page, SELECTORS.login.usuario)) return 'login';
 		if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
 		if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
+		if (Date.now() > limiteLogin && (await visivel(page, SELECTORS.login.usuario))) return 'login';
 		avisar();
 		await sleep(POLL_INTERVAL);
 	} while (Date.now() < deadline);

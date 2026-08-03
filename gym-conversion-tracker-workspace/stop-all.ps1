@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Encerra todas as partes subidas pelo run-all.ps1.
@@ -43,4 +43,25 @@ foreach ($targetPid in $targetPids) {
 }
 
 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+
+# Um socket pode sobreviver ao processo dono quando outro processo herdou o
+# handle (o Chrome do EVO, aberto destacado pelo bridge, é o caso conhecido).
+# Melhor avisar aqui do que deixar o próximo run-all.ps1 falhar sem contexto.
+Start-Sleep -Milliseconds 500
+foreach ($port in @(3000, 4000, 5173)) {
+    $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+    foreach ($listener in $listeners) {
+        if (Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue) { continue }
+        $evoChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -match '--user-data-dir=.*[\\/]perfis[\\/]' -and $_.CommandLine -notmatch '--type=' } |
+            Select-Object -First 1
+        if ($evoChrome) {
+            Write-Warning "Porta $port segue ocupada: o Chrome do EVO (pid $($evoChrome.ProcessId)) herdou o socket do bridge e mantém a porta presa. Feche a janela do Chrome do EVO para liberar."
+        }
+        else {
+            Write-Warning "Porta $port segue ocupada por um socket órfão (dono pid $($listener.OwningProcess) não existe mais). Se não sumir sozinho, só reiniciando o PC."
+        }
+    }
+}
+
 Write-Host 'All parts stopped.'
