@@ -1,13 +1,13 @@
 use std::{
     env,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
@@ -95,11 +95,14 @@ fn main() {
 }
 
 fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String> {
-    // Copying the executable and talking to the shell take long enough to be noticed on the
-    // splash, and nothing else in the startup depends on them.
-    thread::spawn(install_app);
+    // install_app() finishes by pruning every other exe from the app dir — the same
+    // directory the update download lands in — so it has to complete before the update
+    // check, otherwise a fast download can be deleted right before the relaunch.
+    let install = thread::spawn(install_app);
 
+    tag_splash_version(&app);
     set_splash_message(&app, "Verificando atualizações...", false);
+    let _ = install.join();
     if maybe_apply_update(&app)? {
         // A detached helper will start the new build after this process exits.
         app.exit(0);
@@ -196,12 +199,23 @@ fn install_app() {
 }
 
 fn maybe_apply_update(app: &tauri::AppHandle) -> Result<bool, String> {
-    let latest = match fetch_latest_build() {
+    let response = match fetch_latest_build() {
         Ok(value) => value,
-        Err(_) => return Ok(false),
+        Err(error) => {
+            report_update_problem(app, &format!("Falha ao verificar atualizações: {error}"));
+            return Ok(false);
+        }
     };
 
-    let Some(build) = latest else {
+    if !response.configured {
+        report_update_problem(
+            app,
+            "O servidor não está configurado para distribuir atualizações",
+        );
+        return Ok(false);
+    }
+
+    let Some(build) = response.latest else {
         return Ok(false);
     };
     if compare_versions(&build.version, APP_VERSION) <= 0 {
@@ -215,26 +229,43 @@ fn maybe_apply_update(app: &tauri::AppHandle) -> Result<bool, String> {
     );
     let destination = installed_exe_path(&build.version);
     download_build(&build, &destination)?;
-    create_desktop_shortcut(&destination)?;
+    // The shortcut is cosmetic and install_app retries it on every launch, so a failure
+    // here must not abort the update and leave the app stuck on the splash.
+    let _ = create_desktop_shortcut(&destination);
 
     set_splash_message(app, "Reiniciando na nova versão...", false);
     schedule_relaunch(&destination, std::process::id())?;
     Ok(true)
 }
 
-fn fetch_latest_build() -> Result<Option<LatestBuild>, String> {
+fn fetch_latest_build() -> Result<LatestResponse, String> {
     let url = format!("{}/api/desktop/latest", configured_back_url());
-    let response: LatestResponse = ureq::get(&url)
+    ureq::get(&url)
         .timeout(Duration::from_secs(12))
         .call()
         .map_err(|error| error.to_string())?
         .into_json()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())
+}
 
-    if !response.configured {
-        return Ok(None);
+/// An update problem must never stop the app from booting, but it cannot vanish without
+/// a trace either: a misconfigured server used to look exactly like "no updates available".
+fn report_update_problem(app: &tauri::AppHandle, message: &str) {
+    let log_dir = data_dir().join("logs");
+    if fs::create_dir_all(&log_dir).is_ok() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or_default();
+        let _ = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("update.log"))
+            .and_then(|mut file| writeln!(file, "[{timestamp}] {message}"));
     }
-    Ok(response.latest)
+
+    set_splash_message(app, &format!("{message}.\nContinuando sem atualizar..."), false);
+    thread::sleep(Duration::from_secs(3));
 }
 
 fn download_build(build: &LatestBuild, destination: &Path) -> Result<(), String> {
@@ -280,9 +311,9 @@ fn download_build(build: &LatestBuild, destination: &Path) -> Result<(), String>
 }
 
 fn create_desktop_shortcut(target: &Path) -> Result<(), String> {
-    let target_path = target
-        .canonicalize()
-        .unwrap_or_else(|_| target.to_path_buf());
+    // Path::canonicalize returns \\?\ verbatim paths on Windows, which WScript.Shell
+    // rejects with ArgumentException. Callers already pass absolute paths.
+    let target_path = target.to_path_buf();
     let workdir = target_path
         .parent()
         .map(Path::to_path_buf)
@@ -304,7 +335,7 @@ fn create_desktop_shortcut(target: &Path) -> Result<(), String> {
         ps_single_quoted(&path_to_string(&workdir)),
     );
 
-    let status = Command::new("powershell")
+    let output = Command::new("powershell")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -315,14 +346,19 @@ fn create_desktop_shortcut(target: &Path) -> Result<(), String> {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .map_err(|error| error.to_string())?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
-        Err("Falha ao criar o atalho na Área de Trabalho.".to_string())
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if detail.is_empty() {
+            "Falha ao criar o atalho na Área de Trabalho.".to_string()
+        } else {
+            format!("Falha ao criar o atalho na Área de Trabalho: {detail}")
+        })
     }
 }
 
@@ -613,7 +649,7 @@ fn local_bridge_ready() -> bool {
 fn open_main_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     let parsed = tauri::Url::parse(url).map_err(|error| error.to_string())?;
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
-        .title("Skyfit EVO")
+        .title(format!("Skyfit EVO v{APP_VERSION}"))
         .inner_size(1280.0, 860.0)
         .min_inner_size(960.0, 640.0)
         .center()
@@ -637,6 +673,18 @@ fn devtools_enabled() -> bool {
 fn close_splash(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("splash") {
         let _ = window.close();
+    }
+}
+
+/// The splash title comes from its own document.title, so it has to be tagged via eval —
+/// the window title follows whatever the document says.
+fn tag_splash_version(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("splash") {
+        let script = format!(
+            "document.title = '{}';",
+            js_string(&format!("Skyfit EVO v{APP_VERSION}"))
+        );
+        let _ = window.eval(&script);
     }
 }
 

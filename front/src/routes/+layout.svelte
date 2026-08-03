@@ -6,6 +6,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { getBridgeBaseUrl } from '$lib/api/bridge';
 	import { ApiError, api } from '$lib/api/client';
+	import { fetchDesktopAppInfo } from '$lib/api/desktop';
 	import { canAccessAdmin, canAccessDashboard } from '$lib/auth/roles';
 	import ApiHostBadge from '$lib/components/ApiHostBadge.svelte';
 	import DesktopUpdate from '$lib/components/DesktopUpdate.svelte';
@@ -27,6 +28,7 @@
 	let loginForm = $state({ email: '', password: '', loading: false });
 	let resetRequestForm = $state({ email: '' });
 	let accountMessage = $state('');
+	let desktopVersion = $state<string | null>(null);
 	let pathname = $derived(page.url.pathname);
 	let isPublicRoute = $derived(PUBLIC_ROUTES.has(pathname));
 	let navLinks = $derived.by(() => {
@@ -54,7 +56,24 @@
 		// Probe the bridge on startup so the diagnostics panel already has logs
 		// before the user reaches a screen that needs the EVO.
 		void getBridgeBaseUrl();
+		void loadDesktopVersion();
 	});
+
+	// Every page sets its own <title> on navigation, so the desktop version has to be
+	// re-appended after each render for the window title to keep showing it.
+	$effect(() => {
+		page.url.pathname;
+		if (!desktopVersion) return;
+		const suffix = ` — Skyfit EVO v${desktopVersion}`;
+		if (!document.title.endsWith(suffix)) {
+			document.title = `${document.title}${suffix}`;
+		}
+	});
+
+	async function loadDesktopVersion() {
+		const info = await fetchDesktopAppInfo();
+		if (info?.desktop && info.version) desktopVersion = info.version;
+	}
 
 	function navClass(href: NavHref) {
 		return pathname === href
