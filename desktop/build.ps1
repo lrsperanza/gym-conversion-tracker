@@ -125,12 +125,14 @@ if (Test-Path -LiteralPath $PayloadDir) {
 New-Item -ItemType Directory -Force -Path $PayloadDir | Out-Null
 
 Write-Step "Compiling bridge executable"
+# The baseline target only needs SSE4.2, so it also runs on gym PCs whose CPUs
+# predate AVX2. The default bun-windows-x64 target dies with STATUS_ILLEGAL_INSTRUCTION there.
 $BridgeOut = Join-Path $PayloadDir "bridge.exe"
 Invoke-InDirectory $EvoBridgeDir {
     Invoke-Native "bun" @(
         "build",
         "--compile",
-        "--target=bun-windows-x64",
+        "--target=bun-windows-x64-baseline",
         "src/server.ts",
         "--outfile",
         $BridgeOut

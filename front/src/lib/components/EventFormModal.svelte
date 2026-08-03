@@ -2,6 +2,13 @@
 	import { browser } from '$app/environment';
 	import { api, dateTime, money } from '$lib/api/client';
 	import { evoApi, evoAvailable } from '$lib/api/evo';
+	import {
+		describeError,
+		evoError,
+		evoLog,
+		evoWarn,
+		openEvoDiagnostics
+	} from '$lib/api/evo-log.svelte';
 	import { asCents, errorMessage, eventTypeLabel } from '$lib/helpers';
 	import type {
 		Attendance,
@@ -135,6 +142,7 @@
 
 	async function loadEvoState(attendanceId: string) {
 		evoLoading = true;
+		evoLog(`Modal de evento aberto para o atendimento ${attendanceId}: checando o EVO.`);
 		try {
 			const available = await evoAvailable();
 			if (attendance?.id !== attendanceId) return;
@@ -147,10 +155,16 @@
 			if (attendance?.id !== attendanceId) return;
 			evoCredentials = credentials;
 			evoCredentialsForm.username = credentials.username ?? '';
-		} catch {
+			evoLog('Modal de evento: EVO disponível para esta venda.', {
+				credenciaisConfiguradas: credentials.configured
+			});
+		} catch (error) {
 			if (attendance?.id !== attendanceId) return;
 			evoBridgeAvailable = false;
 			evoCredentials = null;
+			evoError('Modal de evento: não consegui ler as credenciais EVO na API do tracker.', {
+				erro: describeError(error)
+			});
 		} finally {
 			if (attendance?.id === attendanceId) evoLoading = false;
 		}
@@ -187,19 +201,31 @@
 
 	async function pollEvoJob(jobId: string) {
 		const deadline = Date.now() + 600_000;
+		let lastLogged = '';
 		while (Date.now() < deadline) {
 			const { job } = await evoApi<{ job: EvoJobStatus }>(`/evo/status/${jobId}`);
 			messageKind = 'info';
 			message = job.message || 'EVO em execução...';
+
+			// Only the transitions matter; the poll itself runs once per second.
+			const snapshot = `${job.status}|${job.message ?? ''}`;
+			if (snapshot !== lastLogged) {
+				lastLogged = snapshot;
+				evoLog(`Job ${jobId}: ${job.status}${job.message ? ` - ${job.message}` : ''}`);
+			}
+
 			if (job.status === 'completed' || job.status === 'failed') return job;
 			await delay(1000);
 		}
+		evoError(`Job ${jobId} passou de 10 minutos sem terminar. Desistindo de acompanhar.`);
 		throw new Error('Tempo limite ao preencher o cadastro no EVO.');
 	}
 
 	async function submitEvoSale(attendanceId: string) {
 		messageKind = 'info';
 		message = 'Enviando venda para o EVO...';
+		evoLog(`Iniciando o envio da venda do atendimento ${attendanceId} para o EVO.`);
+
 		const { ticket } = await api<{ ticket: string; expiresAt: string }>(
 			`/api/evo/attendances/${attendanceId}/ticket`,
 			{ method: 'POST' }
@@ -208,10 +234,18 @@
 			method: 'POST',
 			body: JSON.stringify({ attendanceId, ticket })
 		});
+		evoLog(`Bridge aceitou a venda e criou o job ${jobId}.`);
+
 		const job = await pollEvoJob(jobId);
 		if (job.status === 'failed') {
+			evoError(`Job ${jobId} terminou com falha: o bridge não conseguiu preencher o EVO.`, {
+				mensagem: job.message ?? null,
+				erro: job.error ?? null
+			});
 			throw new Error(job.error || job.message || 'Falha ao preencher o cadastro no EVO.');
 		}
+
+		evoLog(`Job ${jobId} concluído: formulário do EVO preenchido.`);
 		messageKind = 'info';
 		message = 'Venda registrada. Formulário EVO preenchido; revise e salve manualmente.';
 	}
@@ -219,12 +253,14 @@
 	async function retryEvoSale() {
 		if (!evoRetryAttendanceId || busy) return;
 		busy = true;
+		evoLog(`Nova tentativa manual de enviar o atendimento ${evoRetryAttendanceId} para o EVO.`);
 		try {
 			await submitEvoSale(evoRetryAttendanceId);
 			evoRetryAttendanceId = null;
 		} catch (error) {
 			messageKind = 'warning';
 			message = `Venda registrada, mas o EVO precisa de atenção: ${errorMessage(error)}`;
+			evoWarn('A nova tentativa também falhou.', { erro: describeError(error) });
 		} finally {
 			busy = false;
 		}
@@ -292,6 +328,10 @@
 				messageKind = 'warning';
 				message = `Venda registrada, mas o EVO precisa de atenção: ${errorMessage(error)}`;
 				evoRetryAttendanceId = currentAttendance.id;
+				evoWarn('Venda salva no tracker, mas o envio para o EVO falhou.', {
+					atendimento: currentAttendance.id,
+					erro: describeError(error)
+				});
 			}
 		} catch (error) {
 			messageKind = 'error';
@@ -560,11 +600,18 @@
 							</div>
 						{/if}
 					{:else}
-						<p
+						<div
 							class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
 						>
-							Integração EVO indisponível. A venda será registrada apenas no tracker.
-						</p>
+							<p>Integração EVO indisponível. A venda será registrada apenas no tracker.</p>
+							<button
+								type="button"
+								class="mt-2 rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white"
+								onclick={openEvoDiagnostics}
+							>
+								Ver diagnóstico
+							</button>
+						</div>
 					{/if}
 				{:else if eventForm.type === 'LOSS'}
 					<label class="text-sm font-medium text-slate-700">

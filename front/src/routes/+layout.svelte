@@ -4,9 +4,11 @@
 	import { page } from '$app/state';
 	import './layout.css';
 	import favicon from '$lib/assets/favicon.svg';
+	import { getBridgeBaseUrl } from '$lib/api/bridge';
 	import { ApiError, api } from '$lib/api/client';
 	import { canAccessAdmin, canAccessDashboard } from '$lib/auth/roles';
 	import ApiHostBadge from '$lib/components/ApiHostBadge.svelte';
+	import EvoBridgeDiagnostics from '$lib/components/EvoBridgeDiagnostics.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage } from '$lib/helpers';
 	import { setSessionContext, type SessionState } from '$lib/session';
@@ -48,6 +50,9 @@
 
 	onMount(() => {
 		void loadSession();
+		// Probe the bridge on startup so the diagnostics panel already has logs
+		// before the user reaches a screen that needs the EVO.
+		void getBridgeBaseUrl();
 	});
 
 	function navClass(href: NavHref) {
@@ -244,4 +249,5 @@
 	{/if}
 
 	<ApiHostBadge />
+	<EvoBridgeDiagnostics />
 </div>

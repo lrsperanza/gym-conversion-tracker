@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
 	import { evoApi, evoAvailable } from '$lib/api/evo';
+	import { describeError, evoError, evoLog, openEvoDiagnostics } from '$lib/api/evo-log.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage } from '$lib/helpers';
 	import type { EvoCredentialsStatus } from '$lib/types';
@@ -22,6 +23,7 @@
 
 	async function loadEvoIntegration() {
 		evoLoading = true;
+		evoLog('Tela "Conta": carregando o status da integração EVO.');
 		try {
 			const available = await evoAvailable();
 			evoBridgeAvailable = available;
@@ -32,10 +34,16 @@
 			const credentials = await api<EvoCredentialsStatus>('/api/evo/credentials');
 			evoCredentials = credentials;
 			evoCredentialsForm.username = credentials.username ?? '';
+			evoLog('Tela "Conta": integração EVO pronta.', {
+				credenciaisConfiguradas: credentials.configured
+			});
 		} catch (error) {
 			accountMessage = errorMessage(error);
 			evoBridgeAvailable = false;
 			evoCredentials = null;
+			evoError('Tela "Conta": falha ao ler as credenciais EVO na API do tracker.', {
+				erro: describeError(error)
+			});
 		} finally {
 			evoLoading = false;
 		}
@@ -231,12 +239,21 @@
 				Verificando bridge EVO...
 			</p>
 		{:else if !evoBridgeAvailable}
-			<p
+			<div
 				class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900"
 			>
-				Bridge EVO indisponível. Inicie o bridge para salvar credenciais e limpar a sessão do
-				navegador.
-			</p>
+				<p>
+					Bridge EVO indisponível. Inicie o bridge para salvar credenciais e limpar a sessão do
+					navegador.
+				</p>
+				<button
+					type="button"
+					class="mt-2 rounded-xl border border-amber-300 px-3 py-1.5 text-xs font-semibold hover:bg-amber-100"
+					onclick={openEvoDiagnostics}
+				>
+					Ver diagnóstico
+				</button>
+			</div>
 		{:else}
 			<p
 				class="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900"

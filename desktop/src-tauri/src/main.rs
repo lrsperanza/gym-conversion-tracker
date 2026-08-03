@@ -4,7 +4,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -18,12 +18,28 @@ const LOCAL_HEALTH_PORT: u16 = 4000;
 const DEFAULT_BACK_URL: &str =
     "https://gym-conversion-tracker-437354431924.southamerica-east1.run.app";
 const DEFAULT_FRONT_URL: &str = "https://nice-pebble-04842d70f.7.azurestaticapps.net";
+/// The first launch after an update pays for the antivirus scanning the freshly
+/// extracted bridge binary, which can take minutes on an older disk.
+const COLD_START_TIMEOUT: Duration = Duration::from_secs(180);
+const WARM_START_TIMEOUT: Duration = Duration::from_secs(45);
+const LATE_BRIDGE_WATCH: Duration = Duration::from_secs(300);
 const RUNTIME_MARKER: &[u8] =
     concat!("front-remote-v1:", env!("SKYFIT_PAYLOAD_FINGERPRINT")).as_bytes();
 const PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.tar.zst"));
 
 #[derive(Clone, Default)]
 struct BridgeState(Arc<Mutex<Option<Child>>>);
+
+struct Runtime {
+    dir: PathBuf,
+    extracted: bool,
+}
+
+enum BridgeStartup {
+    Ready,
+    Exited(ExitStatus),
+    TimedOut,
+}
 
 fn main() {
     let bridge_state = BridgeState::default();
@@ -73,12 +89,12 @@ fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String
     }
 
     set_splash_message(&app, "Extraindo runtime local...", false);
-    let runtime_dir = extract_payload().map_err(|error| error.to_string())?;
+    let runtime = extract_payload().map_err(|error| error.to_string())?;
     let log_dir = data_dir().join("logs");
     fs::create_dir_all(&log_dir).map_err(|error| error.to_string())?;
 
     set_splash_message(&app, "Iniciando bridge local na porta 4000...", false);
-    let bridge = spawn_bridge(&runtime_dir, &log_dir).map_err(|error| error.to_string())?;
+    let bridge = spawn_bridge(&runtime.dir, &log_dir).map_err(|error| error.to_string())?;
     {
         let mut current = state
             .0
@@ -87,26 +103,45 @@ fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String
         *current = Some(bridge);
     }
 
-    if wait_for_local_bridge(Duration::from_secs(30)) {
-        open_main_window(&app, LOCAL_APP_URL)?;
-        close_splash(&app);
-        return Ok(());
-    }
+    let timeout = if runtime.extracted {
+        COLD_START_TIMEOUT
+    } else {
+        WARM_START_TIMEOUT
+    };
+
+    // A bridge that crashed will never come back, so only a timeout is worth watching for later.
+    let (failure, may_start_late) = match wait_for_local_bridge(&app, &state, timeout) {
+        BridgeStartup::Ready => {
+            open_main_window(&app, LOCAL_APP_URL)?;
+            close_splash(&app);
+            return Ok(());
+        }
+        BridgeStartup::Exited(status) => (describe_exit(status), false),
+        BridgeStartup::TimedOut => (
+            format!("não respondeu em {} segundos", timeout.as_secs()),
+            true,
+        ),
+    };
 
     let details = read_log_tail(&log_dir.join("bridge.err.log")).unwrap_or_default();
-    let message = if details.trim().is_empty() {
-        "Bridge local nao respondeu. Abrindo o front remoto...".to_string()
-    } else {
-        format!("Bridge local nao respondeu. Abrindo o front remoto...\n\n{details}")
-    };
+    let mut message = format!("Bridge local indisponível: {failure}.\nAbrindo o front remoto...");
+    if !details.trim().is_empty() {
+        message.push_str("\n\n");
+        message.push_str(details.trim());
+    }
     set_splash_message(&app, &message, true);
-    thread::sleep(Duration::from_millis(1200));
+    thread::sleep(Duration::from_secs(5));
     open_main_window(&app, configured_front_url())?;
     close_splash(&app);
+
+    if may_start_late {
+        watch_for_late_bridge(app);
+    }
+
     Ok(())
 }
 
-fn extract_payload() -> std::io::Result<PathBuf> {
+fn extract_payload() -> std::io::Result<Runtime> {
     let runtime_dir = runtime_dir();
     let marker = runtime_dir.join(".complete");
     let bridge = runtime_dir.join("bridge.exe");
@@ -115,7 +150,10 @@ fn extract_payload() -> std::io::Result<PathBuf> {
         && bridge.exists()
         && fs::read(&marker).ok().as_deref() == Some(RUNTIME_MARKER)
     {
-        return Ok(runtime_dir);
+        return Ok(Runtime {
+            dir: runtime_dir,
+            extracted: false,
+        });
     }
 
     if runtime_dir.exists() {
@@ -127,8 +165,30 @@ fn extract_payload() -> std::io::Result<PathBuf> {
     let mut archive = tar::Archive::new(decoder);
     archive.unpack(&runtime_dir)?;
     fs::write(marker, RUNTIME_MARKER)?;
+    prune_old_runtimes(&runtime_dir);
 
-    Ok(runtime_dir)
+    Ok(Runtime {
+        dir: runtime_dir,
+        extracted: true,
+    })
+}
+
+/// Each release extracts into its own folder, so without this the leftovers of every
+/// previous version would sit in the user's profile forever.
+fn prune_old_runtimes(current: &Path) {
+    let Some(parent) = current.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path != current && path.is_dir() {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
 }
 
 fn spawn_bridge(runtime_dir: &Path, log_dir: &Path) -> std::io::Result<Child> {
@@ -171,15 +231,95 @@ fn configured_front_url() -> &'static str {
     option_env!("SKYFIT_FRONT_URL").unwrap_or(DEFAULT_FRONT_URL)
 }
 
-fn wait_for_local_bridge(timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
+fn wait_for_local_bridge(
+    app: &tauri::AppHandle,
+    state: &BridgeState,
+    timeout: Duration,
+) -> BridgeStartup {
+    let started_at = Instant::now();
+    let mut reported_seconds = u64::MAX;
+
+    while started_at.elapsed() < timeout {
         if local_bridge_ready() {
-            return true;
+            return BridgeStartup::Ready;
         }
+
+        // A binary the CPU or the antivirus rejects dies in milliseconds and writes nothing
+        // to its log, so the exit status is the only evidence the user ever gets.
+        if let Some(status) = bridge_exit_status(state) {
+            return BridgeStartup::Exited(status);
+        }
+
+        let seconds = started_at.elapsed().as_secs();
+        if seconds != reported_seconds {
+            reported_seconds = seconds;
+            set_splash_message(
+                app,
+                &format!(
+                    "Iniciando bridge local na porta 4000... ({seconds}s de {}s)",
+                    timeout.as_secs()
+                ),
+                false,
+            );
+        }
+
         thread::sleep(Duration::from_millis(400));
     }
-    false
+
+    BridgeStartup::TimedOut
+}
+
+fn bridge_exit_status(state: &BridgeState) -> Option<ExitStatus> {
+    let mut current = state.0.lock().ok()?;
+    current.as_mut()?.try_wait().ok().flatten()
+}
+
+fn describe_exit(status: ExitStatus) -> String {
+    let Some(code) = status.code() else {
+        return "o processo encerrou logo após iniciar".to_string();
+    };
+
+    match exit_code_hint(code) {
+        Some(hint) => format!("o processo encerrou com código {code} ({hint})"),
+        None => format!("o processo encerrou com código {code}"),
+    }
+}
+
+fn exit_code_hint(code: i32) -> Option<&'static str> {
+    const STATUS_ILLEGAL_INSTRUCTION: i32 = -1_073_741_795;
+    const STATUS_ACCESS_VIOLATION: i32 = -1_073_741_819;
+    const STATUS_DLL_NOT_FOUND: i32 = -1_073_741_515;
+
+    match code {
+        STATUS_ILLEGAL_INSTRUCTION => Some(
+            "instrução ilegal: o processador deste PC não suporta as instruções usadas pelo bridge",
+        ),
+        STATUS_ACCESS_VIOLATION => Some("violação de acesso"),
+        STATUS_DLL_NOT_FOUND => Some("faltam DLLs do sistema"),
+        _ => None,
+    }
+}
+
+/// The hosted front runs over HTTPS and the browser blocks it from calling the bridge over
+/// plain HTTP on loopback, so a late start would leave EVO broken for the whole session.
+fn watch_for_late_bridge(app: tauri::AppHandle) {
+    thread::spawn(move || {
+        let deadline = Instant::now() + LATE_BRIDGE_WATCH;
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_secs(2));
+            if !local_bridge_ready() {
+                continue;
+            }
+
+            if let (Some(window), Ok(url)) = (
+                app.get_webview_window("main"),
+                tauri::Url::parse(LOCAL_APP_URL),
+            ) {
+                let _ = window.navigate(url);
+            }
+            return;
+        }
+    });
 }
 
 fn local_bridge_ready() -> bool {

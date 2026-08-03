@@ -111,7 +111,7 @@ export async function run(argv = process.argv.slice(2)): Promise<void> {
     comoConheceu: values['como-conheceu'] ?? DEFAULT_PROSPECT.comoConheceu,
   };
 
-  const timeout = numero(values.timeout, 30_000);
+  const timeout = numero(values.timeout, 120_000);
   const unidade = values.unidade ?? DEFAULT_UNIDADE;
 
   const browser: Browser = await puppeteer.launch({

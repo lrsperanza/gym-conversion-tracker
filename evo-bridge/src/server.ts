@@ -54,6 +54,7 @@ app.all('*', async (c) => proxyToFront(c.req.raw));
 
 Bun.serve({
 	port: env.port,
+	hostname: env.hostname,
 	fetch: app.fetch
 });
 

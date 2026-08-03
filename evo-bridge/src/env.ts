@@ -15,6 +15,9 @@ const defaultAllowedOrigins = [
 
 export const env = {
 	port: Number(Bun.env.BRIDGE_PORT || 4000),
+	// Only the desktop app talks to the bridge. Binding to loopback keeps it off the LAN
+	// and avoids the Windows Firewall prompt on first launch.
+	hostname: Bun.env.BRIDGE_HOST || '127.0.0.1',
 	backUrl: (Bun.env.BACK_URL || cloudBackUrl).replace(/\/$/, ''),
 	frontUrl,
 	allowedOrigins: (Bun.env.FRONT_ALLOWED_ORIGINS || defaultAllowedOrigins.join(','))
