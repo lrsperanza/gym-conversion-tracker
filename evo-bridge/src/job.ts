@@ -9,7 +9,7 @@ import {
 	SELECTORS,
 	type Prospect
 } from 'evo-puppeteer';
-import { withEvoProfile } from './browser.ts';
+import { forgetEvoConnection, withEvoProfile } from './browser.ts';
 import { env } from './env.ts';
 
 const TIMEOUT_MS = env.evoTimeoutMs;
@@ -56,34 +56,7 @@ export function getEvoJob(id: string): EvoJobStatus | undefined {
 
 async function runJob(id: string, payload: EvoPayload): Promise<void> {
 	try {
-		await withEvoProfile(payload.credenciais.usuario, async ({ page }) => {
-		try {
-			updateJob(id, { status: 'running', message: 'Abrindo EVO e garantindo sessão.' });
-			await garantirSessao(page, payload.credenciais, payload.unidade, TIMEOUT_MS);
-
-			updateJob(id, { message: 'Abrindo novo cadastro no EVO.' });
-			await abrirNovoCadastroComRetry(page, payload);
-
-			updateJob(id, { message: 'Preenchendo dados do aluno no EVO.' });
-			await preencherCadastro(page, payload.prospect, TIMEOUT_MS);
-			const result = await conferirCadastro(page);
-			await page.bringToFront().catch(() => undefined);
-
-			updateJob(id, {
-				status: 'completed',
-				message: 'Formulário do EVO preenchido. Revise e salve manualmente no navegador aberto.',
-				result
-			});
-		} catch (error) {
-			const screenshot = await captureError(page);
-			updateJob(id, {
-				status: 'failed',
-				message: 'Falha ao preencher o EVO.',
-				error: error instanceof Error ? error.message : String(error),
-				screenshot
-			});
-		}
-		});
+		await runJobAttempt(id, payload, false);
 	} catch (error) {
 		updateJob(id, {
 			status: 'failed',
@@ -91,6 +64,64 @@ async function runJob(id: string, payload: EvoPayload): Promise<void> {
 			error: error instanceof Error ? error.message : String(error)
 		});
 	}
+}
+
+async function runJobAttempt(id: string, payload: EvoPayload, retriedAfterDisconnect: boolean): Promise<void> {
+	try {
+		await withEvoProfile(payload.credenciais.usuario, async ({ page }) => {
+			await fillEvoRegistration(id, payload, page);
+		});
+	} catch (error) {
+		if (!retriedAfterDisconnect && isBrowserGoneError(error)) {
+			forgetEvoConnection(payload.credenciais.usuario);
+			updateJob(id, {
+				status: 'queued',
+				message: 'Navegador EVO foi fechado; reconectando e tentando novamente.'
+			});
+			await runJobAttempt(id, payload, true);
+			return;
+		}
+
+		throw error;
+	}
+}
+
+async function fillEvoRegistration(id: string, payload: EvoPayload, page: Page): Promise<void> {
+	try {
+		updateJob(id, { status: 'running', message: 'Conectando à sessão do EVO no navegador.' });
+		await garantirSessao(page, payload.credenciais, payload.unidade, TIMEOUT_MS);
+
+		updateJob(id, { message: 'Abrindo novo cadastro no EVO.' });
+		await abrirNovoCadastroComRetry(page, payload);
+
+		updateJob(id, { message: 'Preenchendo dados do aluno no EVO.' });
+		await preencherCadastro(page, payload.prospect, TIMEOUT_MS);
+		const result = await conferirCadastro(page);
+		await page.bringToFront().catch(() => undefined);
+
+		updateJob(id, {
+			status: 'completed',
+			message: 'Formulário do EVO preenchido. Revise e salve manualmente no navegador aberto.',
+			result
+		});
+	} catch (error) {
+		if (isBrowserGoneError(error)) throw error;
+
+		const screenshot = await captureError(page);
+		updateJob(id, {
+			status: 'failed',
+			message: 'Falha ao preencher o EVO.',
+			error: error instanceof Error ? error.message : String(error),
+			screenshot
+		});
+	}
+}
+
+function isBrowserGoneError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /browser.*disconnected|connection.*closed|session.*closed|target.*closed|page.*closed|frame.*detached/i.test(
+		message
+	);
 }
 
 async function abrirNovoCadastroComRetry(page: Page, payload: EvoPayload): Promise<void> {

@@ -28,7 +28,7 @@ Pontos do `tauri.conf.json` que costumam surpreender:
 5. `spawn_bridge()`: roda `bridge.exe` sem janela de console, com `BRIDGE_PORT`, `BACK_URL`, `FRONT_URL`, `DESKTOP_APP_VERSION`, `DESKTOP_PID`, `EVO_PERFIS_DIR`, `EVO_SCREENSHOTS_DIR`. Logs em `%LOCALAPPDATA%\SkyfitEVO\data\logs\bridge.{out,err}.log`.
 6. `wait_for_local_bridge()`: se subir, janela principal em `http://localhost:4000`. Se não, mostra erro no splash por 5s e cai para `configured_front_url()` (o SWA remoto) — **nesse modo o EVO não funciona**, porque não há bridge local. `watch_for_late_bridge()` ainda pode redirecionar a janela de volta para localhost por até 300s.
 
-O `back` **não** é iniciado pelo desktop; ele sempre usa a API remota. Ao sair, `kill_bridge()` derruba o filho. Segunda instância apenas foca a janela existente.
+O `back` **não** é iniciado pelo desktop; ele sempre usa a API remota. Ao sair, `kill_bridge()` derruba o filho, mas o Chrome do EVO é lançado destacado pelo bridge e continua aberto para preservar a sessão; no próximo start o bridge reconecta a essa janela. Segunda instância apenas foca a janela existente.
 
 URLs default compiladas quando `SKYFIT_*` não é passado no build:
 

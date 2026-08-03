@@ -9,7 +9,7 @@ Contexto do monorepo: [`../gym-conversion-tracker-workspace/AGENTS.md`](../gym-c
 | Comando | O que faz |
 |---------|-----------|
 | `bun run start` | `bun src/server.ts` — **modo padrão**, inclusive no `run-all.ps1` |
-| `bun run dev` | Com `--watch`. Evite quando for testar EVO: o restart derruba jobs Puppeteer em andamento |
+| `bun run dev` | Com `--watch`. Evite quando for testar EVO: o restart derruba jobs em andamento, embora o Chrome fique aberto para reconexão |
 | `bun run typecheck` | `tsc --noEmit` |
 
 Formas de subir: standalone, via `../gym-conversion-tracker-workspace/run-all.ps1`, ou como `bridge.exe` (compilado com `bun build --compile`) embutido e lançado pelo app Tauri em `../desktop`.
@@ -22,7 +22,7 @@ Formas de subir: standalone, via `../gym-conversion-tracker-workspace/run-all.ps
 |---------|------------------|
 | `src/server.ts` | Rotas, CORS, proxies, `Bun.serve` |
 | `src/job.ts` | `Map` de jobs em memória, orquestra o fluxo do `evo-puppeteer` |
-| `src/browser.ts` | Ciclo de vida do Chrome por usuário EVO: perfil, launch/reconnect, fila serial, `deleteEvoProfile` |
+| `src/browser.ts` | Ciclo de vida do Chrome por usuário EVO: perfil, spawn destacado/reconnect, fila serial, abas por job, `deleteEvoProfile` |
 | `src/chrome.ts` | Descoberta do Chrome no Windows (`EVO_CHROME_PATH` → registry App Paths → caminhos padrão) |
 | `src/env.ts` | Leitura de `Bun.env` e defaults de nuvem |
 | `src/update.ts` | Auto-update do desktop: `desktopAppInfo`, `fetchLatestBuild`, `applyDesktopUpdate` |
@@ -71,7 +71,7 @@ type EvoJobStatus = {
 
 `createEvoJob` dispara `void runJob(...)` e retorna o `jobId` na hora; o front acompanha por polling em `/evo/status/:jobId`. O tipo é espelhado em `front/src/lib/types.ts`.
 
-Concorrência: **não há limite global**, mas `withEvoProfile()` em `browser.ts` encadeia uma fila de Promises por `profileKey` (`sha256(username.toLowerCase()).slice(0, 16)`), então jobs do mesmo usuário EVO rodam em série e usuários diferentes ganham instâncias separadas do Chrome. O Chrome **fica aberto** depois do job — é a revisão manual do cadastro.
+Concorrência: **não há limite global**, mas `withEvoProfile()` em `browser.ts` encadeia uma fila de Promises por `profileKey` (`sha256(username.toLowerCase()).slice(0, 16)`), então jobs do mesmo usuário EVO rodam em série e usuários diferentes ganham instâncias separadas do Chrome. O Chrome é iniciado destacado do bridge, com perfil persistente e `--restore-last-session`; se o bridge reiniciar, ele reconecta pelo `DevToolsActivePort` em vez de matar a janela. Cada job reutiliza sempre a mesma aba da janela — a sessão do EVO é por aba, então abrir aba nova perderia o login; uma aba só é criada quando não há nenhuma, e abas antigas nunca são fechadas. O Chrome **fica aberto** depois do job — é a revisão manual do cadastro.
 
 Timeout de todas as chamadas Puppeteer: `env.evoTimeoutMs` (90s por padrão).
 

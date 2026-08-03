@@ -1,5 +1,6 @@
 export const LOGIN_URL =
-  'https://evo5.w12app.com.br/#/acesso/skyfitacademia/autenticacao';
+  'https://evo-abc-2.w12app.com.br/#/acesso/skyfitacademia/autenticacao'
+  //'https://evo5.w12app.com.br/#/app/skyfitacademia/320/clientes/2054580//perfil';
 
 /** O formulário de novo cadastro vive dentro deste drawer lateral. */
 export const DRAWER = 'evo-drawer#cadastroDrawer';
