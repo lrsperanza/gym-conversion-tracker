@@ -5,12 +5,17 @@ param(
     [string]$Bump = "",
     [string]$SetVersion = "",
     [switch]$Build,
+    [switch]$NoBuild,
     [switch]$SkipChecks,
     [switch]$NoPrompt
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($Build -and $NoBuild) {
+    throw "-Build e -NoBuild são mutuamente exclusivos."
+}
 
 function Write-Step {
     param([string]$Message)
@@ -103,6 +108,30 @@ function Set-DesktopVersion {
     [System.IO.File]::WriteAllText($CargoPath, $updatedCargo)
 }
 
+function Import-DotEnv {
+    param([string]$Path)
+
+    $values = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $values
+    }
+
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        $trimmed = $line.Trim()
+        if ($trimmed.Length -eq 0 -or $trimmed.StartsWith("#")) { continue }
+        if ($trimmed -notmatch '^(?:export\s+)?(?<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?<value>.*)$') { continue }
+
+        $value = $Matches.value.Trim()
+        if ($value.Length -ge 2 -and
+            (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        $values[$Matches.key] = $value
+    }
+
+    return $values
+}
+
 function Resolve-VersionChoice {
     param(
         [string]$Current,
@@ -166,7 +195,7 @@ if ($Version -ne $CurrentVersion) {
     Write-Step "Atualizando versão $CurrentVersion -> $Version"
     Set-DesktopVersion -ConfigPath $ConfigPath -CargoPath $CargoPath -Version $Version
     Write-Host "Atualizado tauri.conf.json e Cargo.toml." -ForegroundColor Green
-    if (-not $Build -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($ExePath)) {
+    if (-not $Build -and -not $NoBuild -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($ExePath)) {
         $Build = $true
         Write-Host "Build será executado automaticamente (versão nova)." -ForegroundColor DarkGray
     }
@@ -174,8 +203,8 @@ if ($Version -ne $CurrentVersion) {
     Write-Step "Mantendo versão $Version"
 }
 
-$shouldBuild = [bool]$Build
-if (-not $shouldBuild -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($ExePath)) {
+$shouldBuild = [bool]$Build -and -not $NoBuild
+if (-not $shouldBuild -and -not $NoBuild -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($ExePath)) {
     $exeCandidate = Join-Path $DistDir "Skyfit-EVO-$Version.exe"
     if (-not (Test-Path -LiteralPath $exeCandidate -PathType Leaf)) {
         $reply = Read-Host "Não achei $exeCandidate. Buildar agora? [Y/n]"
@@ -183,6 +212,10 @@ if (-not $shouldBuild -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($Exe
             $shouldBuild = $true
         }
     }
+}
+
+if ($NoBuild) {
+    Write-Step "Pulando build (-NoBuild); publicando o exe existente"
 }
 
 if ($shouldBuild) {
@@ -207,15 +240,43 @@ if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
 }
 
 Write-Step "Publishing $ExePath to Azure Blob Storage"
+
+# Variáveis já presentes no ambiente têm prioridade sobre o .env no Bun, então
+# aplicamos desktop/.env explicitamente para não publicar na conta errada.
+$DesktopEnvPath = Join-Path $DesktopDir ".env"
+$DesktopEnv = Import-DotEnv -Path $DesktopEnvPath
+if ($DesktopEnv.Count -eq 0) {
+    Write-Host "Aviso: $DesktopEnvPath não encontrado (ou vazio). Usando as variáveis do ambiente e de back/.env." -ForegroundColor Yellow
+}
+
+$PreviousEnv = @{}
+foreach ($key in $DesktopEnv.Keys) {
+    $PreviousEnv[$key] = [Environment]::GetEnvironmentVariable($key)
+    if ($null -ne $PreviousEnv[$key] -and $PreviousEnv[$key] -ne $DesktopEnv[$key]) {
+        Write-Host "Sobrescrevendo $key do ambiente com o valor de desktop/.env." -ForegroundColor DarkGray
+    }
+    [Environment]::SetEnvironmentVariable($key, $DesktopEnv[$key])
+}
+
 Push-Location $BackDir
 try {
+    foreach ($required in @("AZURE_STORAGE_ACCOUNT_NAME", "AZURE_STORAGE_ACCOUNT_KEY")) {
+        $value = [Environment]::GetEnvironmentVariable($required)
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            throw "$required não está definido. Adicione em $DesktopEnvPath."
+        }
+    }
+
     & bun "src/scripts/publish-desktop.ts" $ExePath
     if ($LASTEXITCODE -ne 0) {
         throw "publish-desktop.ts failed with exit code $LASTEXITCODE"
     }
 } finally {
     Pop-Location
+    foreach ($key in $PreviousEnv.Keys) {
+        [Environment]::SetEnvironmentVariable($key, $PreviousEnv[$key])
+    }
 }
 
 Write-Host ""
-Write-Host "Published Skyfit-EVO-$Version.exe to container 'personal'." -ForegroundColor Green
+Write-Host "Published Skyfit-EVO-$Version.exe." -ForegroundColor Green

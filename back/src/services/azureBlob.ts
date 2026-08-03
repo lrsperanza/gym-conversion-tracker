@@ -84,7 +84,9 @@ export async function uploadBlob(
 	});
 	if (!response.ok) {
 		const detail = await response.text();
-		throw new Error(`Azure respondeu HTTP ${response.status} ao enviar "${blobName}": ${detail.slice(0, 300)}`);
+		throw new Error(
+			`Azure respondeu HTTP ${response.status} ao enviar "${blobName}" para ${env.azure.accountName}/${container}: ${detail.slice(0, 300)}`
+		);
 	}
 }
 

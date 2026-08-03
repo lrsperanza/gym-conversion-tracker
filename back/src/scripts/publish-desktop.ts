@@ -33,11 +33,27 @@ if (!pattern.test(fileName)) {
 const bytes = new Uint8Array(await file.arrayBuffer());
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 
-console.info(`Enviando ${fileName} (${bytes.byteLength} bytes) para ${env.desktop.container}/${fileName}...`);
-await uploadBlob(env.desktop.container, fileName, bytes, {
-	contentType: 'application/octet-stream',
-	metadata: { sha256 }
-});
+console.info(
+	`Enviando ${fileName} (${bytes.byteLength} bytes) para ${env.azure.accountName}/${env.desktop.container}/${fileName}...`
+);
+try {
+	await uploadBlob(env.desktop.container, fileName, bytes, {
+		contentType: 'application/octet-stream',
+		metadata: { sha256 }
+	});
+} catch (error) {
+	const message = error instanceof Error ? error.message : String(error);
+	if (!message.includes('ContainerNotFound')) throw error;
+
+	console.error(message);
+	console.error(
+		`\nO container "${env.desktop.container}" não existe na conta "${env.azure.accountName}".\n` +
+			'Variáveis já definidas no sistema têm prioridade sobre o .env, então confira se AZURE_STORAGE_ACCOUNT_NAME\n' +
+			'aponta mesmo para a conta esperada (`[Environment]::GetEnvironmentVariable("AZURE_STORAGE_ACCOUNT_NAME", "User")`)\n' +
+			'ou crie o container antes de publicar.'
+	);
+	process.exit(1);
+}
 
 console.info('Upload concluído.');
 console.info(`URL pública (após listagem): https://${env.azure.accountName}.blob.core.windows.net/${env.desktop.container}/${fileName}`);
