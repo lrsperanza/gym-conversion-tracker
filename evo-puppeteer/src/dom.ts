@@ -1,4 +1,5 @@
 import type { ElementHandle, Page } from 'puppeteer-core';
+import { checarCancelamento, isCancelamento } from './cancelamento.ts';
 
 /** Sem pausa entre teclas: o preenchimento sai praticamente instantâneo. */
 const DIGITACAO_RAPIDA = 0;
@@ -13,6 +14,8 @@ const ESTABILIDADE_MS = 1_000;
 const CLIQUE_MS = 5_000;
 /** Intervalo entre avisos de "ainda estou esperando". */
 const AVISO_MS = 3_000;
+/** Quanto esperar o painel de um `mat-select` sumir depois da escolha. */
+const PAINEL_MS = 3_000;
 
 export const log = (message: string) => console.log(`  · ${message}`);
 
@@ -53,7 +56,8 @@ export const isTransientError = (error: unknown): boolean => {
 export const isTimeoutError = (error: unknown): boolean =>
 	error instanceof Error && error.name === 'TimeoutError';
 
-const shouldRetry = (error: unknown) => isTransientError(error) || isTimeoutError(error);
+const shouldRetry = (error: unknown) =>
+  !isCancelamento(error) && (isTransientError(error) || isTimeoutError(error));
 
 const remaining = (deadline: number) => Math.max(deadline - Date.now(), 500);
 
@@ -80,6 +84,7 @@ export async function waitFor(
   const avisar = aviso(`"${selector}"`);
   let lastError: unknown;
   while (Date.now() < deadline) {
+    checarCancelamento(page);
     try {
       const handle = await page.waitForSelector(selector, {
         visible: true,
@@ -103,6 +108,7 @@ export async function waitFor(
 export async function exists(page: Page, selector: string, timeout: number): Promise<boolean> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
+    checarCancelamento(page);
     try {
       const handle = await page.waitForSelector(selector, {
         visible: true,
@@ -210,6 +216,7 @@ export async function click(page: Page, selector: string, timeout: number): Prom
   const deadline = Date.now() + timeout;
   let lastError: unknown;
   while (Date.now() < deadline) {
+    checarCancelamento(page);
     try {
       const handle = await waitFor(page, selector, remaining(deadline));
       await clickHandle(handle, Math.min(CLIQUE_MS, remaining(deadline)));
@@ -251,6 +258,7 @@ export async function fill(
   const deadline = Date.now() + timeout;
   let lastError: unknown;
   while (Date.now() < deadline) {
+    checarCancelamento(page);
     try {
       const input = await waitFor(page, selector, remaining(deadline));
       await limpar(page, input);
@@ -329,6 +337,7 @@ export async function waitForText(
 ): Promise<ElementHandle<Element>> {
   const deadline = Date.now() + timeout;
   do {
+    checarCancelamento(page);
     try {
       const handle = await findByText(page, selector, text);
       if (handle) return handle;
@@ -354,6 +363,7 @@ export async function clickByText(
   const deadline = Date.now() + timeout;
   let lastError: unknown;
   while (Date.now() < deadline) {
+    checarCancelamento(page);
     try {
       const handle = await waitForText(page, selector, text, remaining(deadline));
       await clickHandle(handle, Math.min(CLIQUE_MS, remaining(deadline)));
@@ -398,14 +408,21 @@ export async function openMatSelect(page: Page, selectId: string, timeout: numbe
   await waitFor(page, `#${selectId}-panel`, timeout);
 }
 
-/** Depois da escolha o painel fecha sozinho; seguir com ele na tela atrapalha o resto. */
+/**
+ * Depois da escolha o painel fecha sozinho; seguir com ele na tela atrapalha o
+ * resto. Painel que não fecha não é motivo para segurar o fluxo pelo timeout
+ * inteiro: o próximo passo já reclama sozinho se o overlay atrapalhar.
+ */
 export async function waitMatPanelClosed(
   page: Page,
   selectId: string,
   timeout: number,
 ): Promise<void> {
   await page
-    .waitForSelector(`#${selectId}-panel`, { hidden: true, timeout })
+    .waitForSelector(`#${selectId}-panel`, {
+      hidden: true,
+      timeout: Math.min(PAINEL_MS, timeout),
+    })
     .catch(() => undefined);
 }
 

@@ -3,15 +3,26 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
+import { CancelamentoError, limparCancelamento, registrarCancelamento } from 'evo-puppeteer';
 import { resolveChromePath } from './chrome.ts';
 import { env } from './env.ts';
 
 const connections = new Map<string, Browser>();
 const tabs = new Map<string, Page>();
-const queues = new Map<string, Promise<unknown>>();
+const leases = new Map<string, Lease>();
+const abandonadas = new WeakSet<Page>();
 const DEVTOOLS_PROBE_TIMEOUT_MS = 2_000;
 const PROFILE_DELEGATION_MS = 2_000;
 const POLL_MS = 250;
+/** Quanto esperar o fluxo anterior largar a aba depois de pedido para parar. */
+const CANCELAMENTO_MS = 30_000;
+
+const SUPERADO = 'Outro atendimento assumiu o navegador do EVO.';
+
+type Lease = {
+	cancelar: () => void;
+	terminou: Promise<void>;
+};
 
 export type BrowserContext = {
 	browser: Browser;
@@ -24,22 +35,73 @@ export function evoProfileKey(usuario: string): string {
 	return createHash('sha256').update(usuario.toLowerCase().trim()).digest('hex').slice(0, 16);
 }
 
+/**
+ * Um pedido novo manda no navegador. Enfileirar atrás do anterior deixaria a
+ * recepção esperando um preenchimento que ela já abandonou — muitas vezes até o
+ * Chrome ser fechado —, então o fluxo em andamento é avisado para largar a aba
+ * e o novo assume assim que ela fica livre.
+ */
 export async function withEvoProfile<T>(
 	usuario: string,
 	task: (context: BrowserContext) => Promise<T>,
 ): Promise<T> {
 	const profileKey = evoProfileKey(usuario);
-	const previous = queues.get(profileKey) ?? Promise.resolve();
-	const run = previous
-		.catch(() => undefined)
-		.then(async () => {
-			const browser = await getBrowser(profileKey);
-			const page = await getPage(profileKey, browser);
-			return task({ browser, page, profileKey, profileDir: profileDir(profileKey) });
-		});
+	// A troca de lease acontece antes de qualquer await: dois cliques quase
+	// simultâneos precisam enxergar um ao outro, senão os dois assumiriam a aba.
+	const anterior = leases.get(profileKey);
+	anterior?.cancelar();
 
-	queues.set(profileKey, run.catch(() => undefined));
-	return run;
+	let cancelado: string | null = null;
+	const run = (async (): Promise<T> => {
+		if (anterior) await aguardarLiberacao(profileKey, anterior);
+		if (cancelado) throw new CancelamentoError(cancelado);
+
+		const browser = await getBrowser(profileKey);
+		const page = await getPage(profileKey, browser);
+		registrarCancelamento(page, () => cancelado);
+		try {
+			return await task({ browser, page, profileKey, profileDir: profileDir(profileKey) });
+		} finally {
+			limparCancelamento(page);
+		}
+	})();
+
+	const lease: Lease = {
+		cancelar: () => {
+			cancelado ??= SUPERADO;
+		},
+		terminou: run.then(
+			() => undefined,
+			() => undefined,
+		)
+	};
+	leases.set(profileKey, lease);
+
+	try {
+		return await run;
+	} finally {
+		if (leases.get(profileKey) === lease) leases.delete(profileKey);
+	}
+}
+
+async function aguardarLiberacao(profileKey: string, anterior: Lease): Promise<void> {
+	const largou = await Promise.race([
+		anterior.terminou.then(() => true),
+		sleep(CANCELAMENTO_MS).then(() => false)
+	]);
+	if (largou) return;
+
+	// Preso num ponto que não dá para interromper: disputar a mesma aba faria os
+	// dois fluxos digitarem no mesmo formulário, então o novo começa numa aba
+	// limpa e a antiga fica com quem não soltou.
+	console.error('[evo] o preenchimento anterior não respondeu ao cancelamento; abrindo outra aba.');
+	abandonarAba(profileKey);
+}
+
+function abandonarAba(profileKey: string): void {
+	const page = tabs.get(profileKey);
+	if (page) abandonadas.add(page);
+	tabs.delete(profileKey);
 }
 
 export function forgetEvoConnection(usuario: string): void {
@@ -47,6 +109,7 @@ export function forgetEvoConnection(usuario: string): void {
 	const browser = connections.get(profileKey);
 	if (browser?.connected) browser.disconnect();
 	connections.delete(profileKey);
+	tabs.delete(profileKey);
 }
 
 export async function deleteEvoProfile(usuario: string): Promise<void> {
@@ -56,7 +119,8 @@ export async function deleteEvoProfile(usuario: string): Promise<void> {
 		await browser.close().catch(() => undefined);
 		connections.delete(profileKey);
 	}
-	queues.delete(profileKey);
+	tabs.delete(profileKey);
+	leases.delete(profileKey);
 
 	await rm(profileDir(profileKey), { recursive: true, force: true });
 }
@@ -97,7 +161,7 @@ async function getPage(profileKey: string, browser: Browser): Promise<Page> {
 		return cached;
 	}
 
-	const pages = await browser.pages();
+	const pages = (await browser.pages()).filter((aberta) => !abandonadas.has(aberta));
 	const page = pages.find(abaEvo) ?? pages.find(emBranco) ?? pages.at(0) ?? (await browser.newPage());
 	page.setDefaultTimeout(env.evoTimeoutMs);
 	tabs.set(profileKey, page);

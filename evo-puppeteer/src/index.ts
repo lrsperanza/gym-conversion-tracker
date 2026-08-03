@@ -1,4 +1,10 @@
 export {
+	CancelamentoError,
+	isCancelamento,
+	limparCancelamento,
+	registrarCancelamento
+} from './cancelamento.ts';
+export {
 	DEFAULT_PROSPECT,
 	DEFAULT_UNIDADE,
 	DRAWER,

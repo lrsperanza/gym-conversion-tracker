@@ -1,4 +1,5 @@
 import type { Page } from 'puppeteer-core';
+import { checarCancelamento } from './cancelamento.ts';
 import { LOGIN_URL, SELECTORS, type Prospect } from './config.ts';
 import {
   aviso,
@@ -50,15 +51,23 @@ const PAISES_MS = 5_000;
 /** DDD + número no Brasil: 10 dígitos no fixo, 11 no celular. */
 const NACIONAL = [10, 11];
 
-/** Rede lenta pode estourar o goto; tentamos de novo até o deadline. */
+/** Fatia de cada tentativa de abrir a página, para o goto não travar o cancelamento. */
+const GOTO_SLICE = 15_000;
+
+/**
+ * Rede lenta pode estourar o goto; tentamos de novo até o deadline. A espera
+ * vai em fatias porque um `goto` já disparado não dá para interromper — fatiar
+ * mantém o fluxo cancelável enquanto a página não responde.
+ */
 async function gotoComRetry(page: Page, url: string, timeout: number): Promise<void> {
   const deadline = Date.now() + timeout;
   let lastError: unknown;
   while (Date.now() < deadline) {
+    checarCancelamento(page);
     try {
       await page.goto(url, {
         waitUntil: 'domcontentloaded',
-        timeout: Math.max(deadline - Date.now(), 500),
+        timeout: Math.min(GOTO_SLICE, Math.max(deadline - Date.now(), 500)),
       });
       return;
     } catch (error) {
@@ -96,6 +105,14 @@ export async function garantirSessao(
 	unidade: string,
 	timeout: number,
 ): Promise<void> {
+	// A aba é reutilizada entre atendimentos. Se o atalho já está na tela, a
+	// sessão está viva e uma navegação nova faria o SPA repetir o login para
+	// voltar ao mesmo lugar.
+	if (await visivel(page, SELECTORS.sessaoAtiva)) {
+		log('sessão EVO já está ativa — pulando login');
+		return;
+	}
+
 	log(`abrindo ${LOGIN_URL}`);
 	await gotoComRetry(page, LOGIN_URL, timeout);
 
@@ -141,6 +158,7 @@ async function preencherLoginAteRedirecionar(
 	let observando = true;
 	const redirecionamento = (async (): Promise<DestinoSessao> => {
 		while (observando) {
+			checarCancelamento(page);
 			if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
 			if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
 			await sleep(POLL_INTERVAL);
@@ -177,6 +195,7 @@ async function detectarEstadoSessao(page: Page, timeout: number): Promise<Estado
 	const limiteLogin = Date.now() + Math.min(GRACA_SESSAO_MS, timeout);
 	const avisar = aviso('o EVO terminar de carregar');
 	do {
+		checarCancelamento(page);
 		if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
 		if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
 		if (Date.now() > limiteLogin && (await visivel(page, SELECTORS.login.usuario))) return 'login';
@@ -227,6 +246,7 @@ export async function escolherUnidade(
   log(`selecionando a unidade "${unidade}"`);
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
+    checarCancelamento(page);
     await marcarEClicarUnidade(page, unidade, deadline);
 
     const reacao = await confirmarUnidade(page, deadline);
@@ -256,6 +276,7 @@ async function aguardarModalOuSessao(
   const avisar = aviso('o modal de unidades ou a tela inicial do EVO');
 
   while (Date.now() < deadline) {
+    checarCancelamento(page);
     if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
     if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
     if (Date.now() > limiteLogin && (await visivel(page, SELECTORS.login.usuario))) return 'login';
@@ -276,6 +297,7 @@ async function marcarEClicarUnidade(page: Page, unidade: string, deadline: numbe
   let escolha = await marcarUnidade(page, unidade);
 
   while (escolha.tipo !== 'ok' && Date.now() < limite) {
+    checarCancelamento(page);
     avisar();
     await sleep(POLL_INTERVAL);
     escolha = await marcarUnidade(page, unidade);
@@ -318,6 +340,7 @@ async function confirmarUnidade(
   let ultimo: BotaoConfirmar = 'ausente';
 
   while (Date.now() < limite) {
+    checarCancelamento(page);
     if (!(await visivel(page, SELECTORS.unidade.modal))) return 'fechou';
     ultimo = await marcarConfirmacao(page);
     if (ultimo === 'clicavel') {
@@ -334,6 +357,7 @@ async function modalFechou(page: Page, timeout: number): Promise<boolean> {
   const deadline = Date.now() + timeout;
   const avisar = aviso('o modal de unidades fechar');
   do {
+    checarCancelamento(page);
     if (!(await visivel(page, SELECTORS.unidade.modal))) return true;
     avisar();
     await sleep(POLL_INTERVAL);
@@ -649,6 +673,7 @@ async function selecionarDdi(page: Page, ddi: string, timeout: number): Promise<
   const avisar = aviso('a lista de países do DDI');
   let marcado = await marcarDdi(page, id, ddi);
   while (!marcado && Date.now() < limite) {
+    checarCancelamento(page);
     avisar();
     await sleep(POLL_INTERVAL);
     marcado = await marcarDdi(page, id, ddi);

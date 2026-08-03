@@ -5,6 +5,7 @@ import {
 	abrirNovoCadastro,
 	conferirCadastro,
 	garantirSessao,
+	isCancelamento,
 	preencherCadastro,
 	SELECTORS,
 	type Prospect
@@ -55,14 +56,27 @@ export function getEvoJob(id: string): EvoJobStatus | undefined {
 }
 
 async function runJob(id: string, payload: EvoPayload): Promise<void> {
+	console.info(`[evo] job ${id}: preenchendo "${payload.prospect.nome}".`);
 	try {
 		await runJobAttempt(id, payload, false);
 	} catch (error) {
+		if (isCancelamento(error)) {
+			updateJob(id, {
+				status: 'failed',
+				message: 'Preenchimento interrompido: outro atendimento assumiu o navegador do EVO.',
+				error: error instanceof Error ? error.message : String(error)
+			});
+			return;
+		}
+
 		updateJob(id, {
 			status: 'failed',
 			message: 'Falha ao iniciar o navegador EVO.',
 			error: error instanceof Error ? error.message : String(error)
 		});
+	} finally {
+		const final = jobs.get(id);
+		console.info(`[evo] job ${id}: ${final?.status ?? 'desconhecido'} — ${final?.message ?? ''}`);
 	}
 }
 
@@ -105,7 +119,7 @@ async function fillEvoRegistration(id: string, payload: EvoPayload, page: Page):
 			result
 		});
 	} catch (error) {
-		if (isBrowserGoneError(error)) throw error;
+		if (isBrowserGoneError(error) || isCancelamento(error)) throw error;
 
 		const screenshot = await captureError(page);
 		updateJob(id, {
@@ -129,7 +143,7 @@ async function abrirNovoCadastroComRetry(page: Page, payload: EvoPayload): Promi
 		await abrirNovoCadastro(page, TIMEOUT_MS);
 		return;
 	} catch (error) {
-		if (!(await loginVisivel(page))) throw error;
+		if (isCancelamento(error) || !(await loginVisivel(page))) throw error;
 		await garantirSessao(page, payload.credenciais, payload.unidade, TIMEOUT_MS);
 		await abrirNovoCadastro(page, TIMEOUT_MS);
 	}
