@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 const LOCAL_APP_URL: &str = "http://localhost:4000";
@@ -26,6 +28,8 @@ const LATE_BRIDGE_WATCH: Duration = Duration::from_secs(300);
 const RUNTIME_MARKER: &[u8] =
     concat!("front-remote-v1:", env!("SKYFIT_PAYLOAD_FINGERPRINT")).as_bytes();
 const PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.tar.zst"));
+const SHORTCUT_NAME: &str = "Skyfit EVO.lnk";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Default)]
 struct BridgeState(Arc<Mutex<Option<Child>>>);
@@ -39,6 +43,20 @@ enum BridgeStartup {
     Ready,
     Exited(ExitStatus),
     TimedOut,
+}
+
+#[derive(Deserialize)]
+struct LatestResponse {
+    configured: bool,
+    latest: Option<LatestBuild>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LatestBuild {
+    version: String,
+    download_url: String,
+    sha256: Option<String>,
 }
 
 fn main() {
@@ -77,6 +95,17 @@ fn main() {
 }
 
 fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String> {
+    // Copying the executable and talking to the shell take long enough to be noticed on the
+    // splash, and nothing else in the startup depends on them.
+    thread::spawn(install_app);
+
+    set_splash_message(&app, "Verificando atualizações...", false);
+    if maybe_apply_update(&app)? {
+        // A detached helper will start the new build after this process exits.
+        app.exit(0);
+        return Ok(());
+    }
+
     set_splash_message(
         &app,
         "Procurando aplicativo local em localhost:4000...",
@@ -139,6 +168,241 @@ fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String
     }
 
     Ok(())
+}
+
+/// Installs a versioned copy under LocalAppData and (re)creates the desktop shortcut.
+fn install_app() {
+    let Ok(current) = env::current_exe() else {
+        return;
+    };
+    let installed = installed_exe_path(APP_VERSION);
+    if let Some(parent) = installed.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let current_canon = current.canonicalize().ok();
+    let installed_canon = installed.canonicalize().ok();
+    if current_canon.as_ref() != installed_canon.as_ref() {
+        let _ = fs::copy(&current, &installed);
+    }
+
+    let target = if installed.exists() {
+        installed
+    } else {
+        current
+    };
+    let _ = create_desktop_shortcut(&target);
+    prune_old_installs(&target);
+}
+
+fn maybe_apply_update(app: &tauri::AppHandle) -> Result<bool, String> {
+    let latest = match fetch_latest_build() {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+
+    let Some(build) = latest else {
+        return Ok(false);
+    };
+    if compare_versions(&build.version, APP_VERSION) <= 0 {
+        return Ok(false);
+    }
+
+    set_splash_message(
+        app,
+        &format!("Baixando atualização {}...", build.version),
+        false,
+    );
+    let destination = installed_exe_path(&build.version);
+    download_build(&build, &destination)?;
+    create_desktop_shortcut(&destination)?;
+
+    set_splash_message(app, "Reiniciando na nova versão...", false);
+    schedule_relaunch(&destination, std::process::id())?;
+    Ok(true)
+}
+
+fn fetch_latest_build() -> Result<Option<LatestBuild>, String> {
+    let url = format!("{}/api/desktop/latest", configured_back_url());
+    let response: LatestResponse = ureq::get(&url)
+        .timeout(Duration::from_secs(12))
+        .call()
+        .map_err(|error| error.to_string())?
+        .into_json()
+        .map_err(|error| error.to_string())?;
+
+    if !response.configured {
+        return Ok(None);
+    }
+    Ok(response.latest)
+}
+
+fn download_build(build: &LatestBuild, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let partial = destination.with_extension("exe.partial");
+    let response = ureq::get(&build.download_url)
+        .timeout(Duration::from_secs(10 * 60))
+        .call()
+        .map_err(|error| error.to_string())?;
+
+    let mut file = File::create(&partial).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut reader = response.into_reader();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])
+            .map_err(|error| error.to_string())?;
+        hasher.update(&buffer[..read]);
+    }
+    file.flush().map_err(|error| error.to_string())?;
+    drop(file);
+
+    let digest = hex::encode(hasher.finalize());
+    if let Some(expected) = build.sha256.as_deref() {
+        if !expected.eq_ignore_ascii_case(&digest) {
+            let _ = fs::remove_file(&partial);
+            return Err(format!(
+                "Hash da build {} não confere (esperado {expected}, obtido {digest}).",
+                build.version
+            ));
+        }
+    }
+
+    fs::rename(&partial, destination).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn create_desktop_shortcut(target: &Path) -> Result<(), String> {
+    let target_path = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
+    let workdir = target_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| target_path.clone());
+
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         $desktop = [Environment]::GetFolderPath('Desktop')\n\
+         $linkPath = Join-Path $desktop '{}'\n\
+         if (Test-Path -LiteralPath $linkPath) {{ Remove-Item -LiteralPath $linkPath -Force }}\n\
+         $shell = New-Object -ComObject WScript.Shell\n\
+         $shortcut = $shell.CreateShortcut($linkPath)\n\
+         $shortcut.TargetPath = '{}'\n\
+         $shortcut.WorkingDirectory = '{}'\n\
+         $shortcut.Description = 'Skyfit EVO'\n\
+         $shortcut.Save()\n",
+        ps_single_quoted(SHORTCUT_NAME),
+        ps_single_quoted(&path_to_string(&target_path)),
+        ps_single_quoted(&path_to_string(&workdir)),
+    );
+
+    let status = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| error.to_string())?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Falha ao criar o atalho na Área de Trabalho.".to_string())
+    }
+}
+
+fn schedule_relaunch(next_exe: &Path, current_pid: u32) -> Result<(), String> {
+    let next = path_to_string(next_exe);
+    let command = format!(
+        "taskkill /PID {current_pid} /F >nul 2>&1 & ping 127.0.0.1 -n 3 >nul & start \"\" \"{next}\""
+    );
+
+    let mut process = Command::new("cmd");
+    process
+        .args(["/C", &command])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        process.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    }
+
+    process.spawn().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn prune_old_installs(current: &Path) {
+    let Some(parent) = current.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path != current
+            && path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn installed_exe_path(version: &str) -> PathBuf {
+    app_dir().join(format!("Skyfit-EVO-{version}.exe"))
+}
+
+fn app_dir() -> PathBuf {
+    local_app_data().join("SkyfitEVO").join("app")
+}
+
+fn compare_versions(a: &str, b: &str) -> i32 {
+    let left: Vec<u32> = a.split('.').filter_map(|part| part.parse().ok()).collect();
+    let right: Vec<u32> = b.split('.').filter_map(|part| part.parse().ok()).collect();
+    let len = left.len().max(right.len());
+    for index in 0..len {
+        let l = left.get(index).copied().unwrap_or(0);
+        let r = right.get(index).copied().unwrap_or(0);
+        if l < r {
+            return -1;
+        }
+        if l > r {
+            return 1;
+        }
+    }
+    0
+}
+
+fn ps_single_quoted(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "\\")
 }
 
 fn extract_payload() -> std::io::Result<Runtime> {
@@ -207,6 +471,8 @@ fn spawn_bridge(runtime_dir: &Path, log_dir: &Path) -> std::io::Result<Child> {
         .env("BRIDGE_PORT", "4000")
         .env("BACK_URL", configured_back_url())
         .env("FRONT_URL", configured_front_url())
+        .env("DESKTOP_APP_VERSION", APP_VERSION)
+        .env("DESKTOP_PID", std::process::id().to_string())
         .env("EVO_PERFIS_DIR", perfis)
         .env("EVO_SCREENSHOTS_DIR", screenshots)
         .stdin(Stdio::null())
@@ -397,7 +663,7 @@ fn runtime_dir() -> PathBuf {
     local_app_data()
         .join("SkyfitEVO")
         .join("runtime")
-        .join(env!("CARGO_PKG_VERSION"))
+        .join(APP_VERSION)
 }
 
 fn data_dir() -> PathBuf {

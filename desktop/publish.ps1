@@ -1,0 +1,221 @@
+[CmdletBinding()]
+param(
+    [string]$ExePath = "",
+    [ValidateSet("", "keep", "patch", "minor", "major")]
+    [string]$Bump = "",
+    [string]$SetVersion = "",
+    [switch]$Build,
+    [switch]$SkipChecks,
+    [switch]$NoPrompt
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host ""
+    Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+function Get-SemVerParts {
+    param([string]$Version)
+
+    if ($Version -notmatch '^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$') {
+        throw "Versão inválida '$Version'. Use o formato X.Y.Z (ex: 1.0.2)."
+    }
+
+    return [pscustomobject]@{
+        Major = [int]$Matches.major
+        Minor = [int]$Matches.minor
+        Patch = [int]$Matches.patch
+        Text  = $Version
+    }
+}
+
+function Get-NextVersion {
+    param(
+        [string]$Current,
+        [ValidateSet("keep", "patch", "minor", "major")]
+        [string]$Kind
+    )
+
+    $parts = Get-SemVerParts -Version $Current
+    switch ($Kind) {
+        "keep" { return $parts.Text }
+        "patch" { return "{0}.{1}.{2}" -f $parts.Major, $parts.Minor, ($parts.Patch + 1) }
+        "minor" { return "{0}.{1}.0" -f $parts.Major, ($parts.Minor + 1) }
+        "major" { return "{0}.0.0" -f ($parts.Major + 1) }
+    }
+}
+
+function Read-DesktopVersion {
+    param(
+        [string]$ConfigPath,
+        [string]$CargoPath
+    )
+
+    $configVersion = [string]((Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json).version)
+    $cargoRaw = Get-Content -LiteralPath $CargoPath -Raw
+    if ($cargoRaw -notmatch '(?m)^version\s*=\s*"(?<version>\d+\.\d+\.\d+)"\s*$') {
+        throw "Não achei version = `"X.Y.Z`" em $CargoPath"
+    }
+    $cargoVersion = $Matches.version
+
+    if ($configVersion -ne $cargoVersion) {
+        throw "Versões dessincronizadas: tauri.conf.json=$configVersion, Cargo.toml=$cargoVersion"
+    }
+
+    return (Get-SemVerParts -Version $configVersion).Text
+}
+
+function Set-DesktopVersion {
+    param(
+        [string]$ConfigPath,
+        [string]$CargoPath,
+        [string]$Version
+    )
+
+    $null = Get-SemVerParts -Version $Version
+
+    $configRaw = Get-Content -LiteralPath $ConfigPath -Raw
+    $updatedConfig = [regex]::Replace(
+        $configRaw,
+        '(?m)^(\s*"version"\s*:\s*")\d+\.\d+\.\d+("\s*,?\s*)$',
+        "`${1}$Version`${2}",
+        1
+    )
+    if ($updatedConfig -eq $configRaw) {
+        throw "Falha ao atualizar a versão em $ConfigPath"
+    }
+    [System.IO.File]::WriteAllText($ConfigPath, $updatedConfig)
+
+    $cargoRaw = Get-Content -LiteralPath $CargoPath -Raw
+    $updatedCargo = [regex]::Replace(
+        $cargoRaw,
+        '(?m)^version\s*=\s*"\d+\.\d+\.\d+"\s*$',
+        "version = `"$Version`"",
+        1
+    )
+    if ($updatedCargo -eq $cargoRaw) {
+        throw "Falha ao atualizar a versão em $CargoPath"
+    }
+    [System.IO.File]::WriteAllText($CargoPath, $updatedCargo)
+}
+
+function Resolve-VersionChoice {
+    param(
+        [string]$Current,
+        [string]$Bump,
+        [string]$SetVersion,
+        [switch]$NoPrompt
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($SetVersion)) {
+        return (Get-SemVerParts -Version $SetVersion.Trim()).Text
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Bump)) {
+        return Get-NextVersion -Current $Current -Kind $Bump
+    }
+
+    if ($NoPrompt) {
+        return $Current
+    }
+
+    $patch = Get-NextVersion -Current $Current -Kind patch
+    $minor = Get-NextVersion -Current $Current -Kind minor
+    $major = Get-NextVersion -Current $Current -Kind major
+
+    Write-Host ""
+    Write-Host "Versão atual: $Current" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  [1] patch  -> $patch   (padrão, Enter)"
+    Write-Host "  [2] minor  -> $minor"
+    Write-Host "  [3] major  -> $major"
+    Write-Host "  [4] keep   -> $Current  (republicar a mesma versão)"
+    Write-Host "  ou digite uma versão (ex: 1.2.0)"
+    Write-Host ""
+
+    $answer = Read-Host "Escolha"
+    if ([string]::IsNullOrWhiteSpace($answer) -or $answer -eq "1") {
+        return $patch
+    }
+    if ($answer -eq "2") { return $minor }
+    if ($answer -eq "3") { return $major }
+    if ($answer -eq "4" -or $answer -eq "keep") { return $Current }
+    if ($answer -match '^(patch|minor|major|keep)$') {
+        return Get-NextVersion -Current $Current -Kind $answer
+    }
+
+    return (Get-SemVerParts -Version $answer.Trim()).Text
+}
+
+$DesktopDir = Split-Path -Parent $PSCommandPath
+$RootDir = (Resolve-Path -LiteralPath (Join-Path $DesktopDir "..")).Path
+$BackDir = Join-Path $RootDir "back"
+$DistDir = Join-Path $DesktopDir "dist"
+$TauriDir = Join-Path $DesktopDir "src-tauri"
+$ConfigPath = Join-Path $TauriDir "tauri.conf.json"
+$CargoPath = Join-Path $TauriDir "Cargo.toml"
+
+$CurrentVersion = Read-DesktopVersion -ConfigPath $ConfigPath -CargoPath $CargoPath
+$Version = Resolve-VersionChoice -Current $CurrentVersion -Bump $Bump -SetVersion $SetVersion -NoPrompt:$NoPrompt
+
+if ($Version -ne $CurrentVersion) {
+    Write-Step "Atualizando versão $CurrentVersion -> $Version"
+    Set-DesktopVersion -ConfigPath $ConfigPath -CargoPath $CargoPath -Version $Version
+    Write-Host "Atualizado tauri.conf.json e Cargo.toml." -ForegroundColor Green
+    if (-not $Build -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($ExePath)) {
+        $Build = $true
+        Write-Host "Build será executado automaticamente (versão nova)." -ForegroundColor DarkGray
+    }
+} else {
+    Write-Step "Mantendo versão $Version"
+}
+
+$shouldBuild = [bool]$Build
+if (-not $shouldBuild -and -not $NoPrompt -and [string]::IsNullOrWhiteSpace($ExePath)) {
+    $exeCandidate = Join-Path $DistDir "Skyfit-EVO-$Version.exe"
+    if (-not (Test-Path -LiteralPath $exeCandidate -PathType Leaf)) {
+        $reply = Read-Host "Não achei $exeCandidate. Buildar agora? [Y/n]"
+        if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^(y|yes|s|sim)$') {
+            $shouldBuild = $true
+        }
+    }
+}
+
+if ($shouldBuild) {
+    Write-Step "Building desktop package $Version"
+    $buildScript = Join-Path $DesktopDir "build.ps1"
+    if ($SkipChecks) {
+        & $buildScript -SkipChecks
+    } else {
+        & $buildScript
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "build.ps1 failed with exit code $LASTEXITCODE"
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($ExePath)) {
+    $ExePath = Join-Path $DistDir "Skyfit-EVO-$Version.exe"
+}
+
+if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
+    throw "Executable not found: $ExePath. Rode com build (padrão após bump) ou passe -ExePath."
+}
+
+Write-Step "Publishing $ExePath to Azure Blob Storage"
+Push-Location $BackDir
+try {
+    & bun "src/scripts/publish-desktop.ts" $ExePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "publish-desktop.ts failed with exit code $LASTEXITCODE"
+    }
+} finally {
+    Pop-Location
+}
+
+Write-Host ""
+Write-Host "Published Skyfit-EVO-$Version.exe to container 'personal'." -ForegroundColor Green

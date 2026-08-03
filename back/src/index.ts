@@ -8,6 +8,7 @@ import { adminRoutes } from './routes/admin';
 import { attendanceRoutes } from './routes/attendances';
 import { authRoutes } from './routes/auth';
 import { dashboardRoutes } from './routes/dashboard';
+import { desktopRoutes } from './routes/desktop';
 import { evoRoutes } from './routes/evo';
 
 const app = new Hono<AppBindings>();
@@ -63,7 +64,9 @@ app.get('/openapi.json', (c) =>
 			'/api/attendances': { get: { summary: 'Lista atendimentos' }, post: { summary: 'Abre atendimento no horário atual do servidor' } },
 			'/api/attendances/{id}/events': { post: { summary: 'Registra evento append-only no atendimento' } },
 			'/api/dashboard/summary': { get: { summary: 'KPIs e séries de conversão' } },
-			'/api/dashboard/audit': { get: { summary: 'Lista auditável de atendimentos' } }
+			'/api/dashboard/audit': { get: { summary: 'Lista auditável de atendimentos' } },
+			'/api/desktop/latest': { get: { summary: 'Build mais recente do app desktop com link de download temporário' } },
+			'/api/desktop/releases': { get: { summary: 'Lista as builds publicadas do app desktop' } }
 		}
 	})
 );
@@ -71,6 +74,7 @@ app.get('/openapi.json', (c) =>
 app.route('/api/auth', authRoutes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/evo', evoRoutes);
+app.route('/api/desktop', desktopRoutes);
 app.route('/api', attendanceRoutes);
 app.route('/api', dashboardRoutes);
 

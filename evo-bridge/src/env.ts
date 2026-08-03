@@ -26,5 +26,7 @@ export const env = {
 		.filter(Boolean),
 	perfisDir: resolve(root, Bun.env.EVO_PERFIS_DIR || '.cache/perfis'),
 	screenshotsDir: resolve(root, Bun.env.EVO_SCREENSHOTS_DIR || 'screenshots'),
-	evoTimeoutMs: Number(Bun.env.EVO_TIMEOUT_MS || 90_000)
+	evoTimeoutMs: Number(Bun.env.EVO_TIMEOUT_MS || 90_000),
+	desktopVersion: Bun.env.DESKTOP_APP_VERSION?.trim() || null,
+	desktopPid: Number.parseInt(Bun.env.DESKTOP_PID || '', 10) || null
 } as const;

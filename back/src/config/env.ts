@@ -21,7 +21,11 @@ const rawEnvSchema = z.object({
 	AWS_SMTP_FROM_EMAIL: z.string().email().or(z.literal('')).default(''),
 	AWS_SMTP_FROM_NAME: z.string().default('Skyfit'),
 	EVO_CRED_KEY: z.string().default(''),
-	EVO_TICKET_KEY: z.string().default('')
+	EVO_TICKET_KEY: z.string().default(''),
+	AZURE_STORAGE_ACCOUNT_NAME: z.string().default(''),
+	AZURE_STORAGE_ACCOUNT_KEY: z.string().default(''),
+	DESKTOP_BLOB_CONTAINER: z.string().default('personal'),
+	DESKTOP_BUILD_PREFIX: z.string().default('Skyfit-EVO-')
 });
 
 const parsed = rawEnvSchema.parse(Bun.env);
@@ -51,6 +55,14 @@ export const env = {
 	evo: {
 		credentialKey: parsed.EVO_CRED_KEY,
 		ticketKey: parsed.EVO_TICKET_KEY || parsed.EVO_CRED_KEY
+	},
+	azure: {
+		accountName: parsed.AZURE_STORAGE_ACCOUNT_NAME,
+		accountKey: parsed.AZURE_STORAGE_ACCOUNT_KEY
+	},
+	desktop: {
+		container: parsed.DESKTOP_BLOB_CONTAINER,
+		buildPrefix: parsed.DESKTOP_BUILD_PREFIX
 	}
 } as const;
 

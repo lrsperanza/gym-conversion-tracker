@@ -8,6 +8,7 @@
 	import { ApiError, api } from '$lib/api/client';
 	import { canAccessAdmin, canAccessDashboard } from '$lib/auth/roles';
 	import ApiHostBadge from '$lib/components/ApiHostBadge.svelte';
+	import DesktopUpdate from '$lib/components/DesktopUpdate.svelte';
 	import EvoBridgeDiagnostics from '$lib/components/EvoBridgeDiagnostics.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage } from '$lib/helpers';
@@ -250,4 +251,5 @@
 
 	<ApiHostBadge />
 	<EvoBridgeDiagnostics />
+	<DesktopUpdate />
 </div>

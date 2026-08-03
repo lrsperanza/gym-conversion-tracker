@@ -2,12 +2,25 @@ import { Hono } from 'hono';
 import { deleteEvoProfile } from './browser.ts';
 import { env } from './env.ts';
 import { createEvoJob, getEvoJob, type EvoPayload } from './job.ts';
+import { applyDesktopUpdate, desktopAppInfo } from './update.ts';
 
 const app = new Hono();
 
 app.options('/evo/*', (c) => new Response(null, { status: 204, headers: corsHeaders(c.req.raw) }));
 
 app.get('/evo/health', (c) => withCors(c.json({ ok: true, service: 'evo-bridge' }), c.req.raw));
+
+app.get('/evo/app-info', (c) => withCors(c.json(desktopAppInfo()), c.req.raw));
+
+app.post('/evo/apply-update', async (c) => {
+	try {
+		const result = await applyDesktopUpdate();
+		return withCors(c.json({ ok: true, restarting: true, ...result }), c.req.raw);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : 'Falha ao atualizar o app desktop.';
+		return withCors(c.json({ error: { code: 'UPDATE_FAILED', message } }, 400), c.req.raw);
+	}
+});
 
 app.post('/evo/venda', async (c) => {
 	const body = await c.req.json().catch(() => null);
