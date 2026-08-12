@@ -6,6 +6,16 @@ import { sveltekit } from '@sveltejs/kit/vite';
 
 export default defineConfig({
 	envPrefix: ['VITE_', 'PUBLIC_'],
+	// O evo-bridge (:4000) faz proxy HTTP simples, sem upgrade de WebSocket. Sem isto,
+	// o cliente de HMR tenta ws://localhost:4000, falha e o Vite recarrega a página em loop.
+	server: {
+		port: 5173,
+		strictPort: true,
+		hmr: {
+			host: 'localhost',
+			clientPort: 5173
+		}
+	},
 	plugins: [
 		tailwindcss(),
 		sveltekit({

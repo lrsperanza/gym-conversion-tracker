@@ -59,7 +59,7 @@ const GOTO_SLICE = 15_000;
  * vai em fatias porque um `goto` já disparado não dá para interromper — fatiar
  * mantém o fluxo cancelável enquanto a página não responde.
  */
-async function gotoComRetry(page: Page, url: string, timeout: number): Promise<void> {
+export async function gotoComRetry(page: Page, url: string, timeout: number): Promise<void> {
   const deadline = Date.now() + timeout;
   let lastError: unknown;
   while (Date.now() < deadline) {

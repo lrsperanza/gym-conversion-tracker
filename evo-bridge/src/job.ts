@@ -6,8 +6,10 @@ import {
 	conferirCadastro,
 	garantirSessao,
 	isCancelamento,
+	listarContratosVenda,
 	preencherCadastro,
 	SELECTORS,
+	type ContratoVenda,
 	type Prospect
 } from 'evo-puppeteer';
 import { forgetEvoConnection, withEvoProfile } from './browser.ts';
@@ -24,11 +26,20 @@ export type EvoPayload = {
 	prospect: Prospect;
 };
 
+export type EvoPlansPayload = {
+	credenciais: {
+		usuario: string;
+		senha: string;
+	};
+	unidade: string;
+};
+
 export type EvoJobStatus = {
 	id: string;
 	status: 'queued' | 'running' | 'completed' | 'failed';
 	message: string;
 	result?: Record<string, string>;
+	plans?: ContratoVenda[];
 	error?: string;
 	screenshot?: string;
 	createdAt: string;
@@ -39,15 +50,17 @@ const jobs = new Map<string, EvoJobStatus>();
 
 export function createEvoJob(payload: EvoPayload): string {
 	const id = crypto.randomUUID();
-	setJob(id, {
-		id,
-		status: 'queued',
-		message: 'Aguardando navegador EVO.',
-		createdAt: new Date().toISOString(),
-		updatedAt: new Date().toISOString()
-	});
+	setJob(id, initialJob(id, 'Aguardando navegador EVO.'));
 
 	void runJob(id, payload);
+	return id;
+}
+
+export function createPlansJob(payload: EvoPlansPayload): string {
+	const id = crypto.randomUUID();
+	setJob(id, initialJob(id, 'Aguardando navegador EVO para atualizar os planos.'));
+
+	void runPlansJob(id, payload);
 	return id;
 }
 
@@ -64,6 +77,31 @@ async function runJob(id: string, payload: EvoPayload): Promise<void> {
 			updateJob(id, {
 				status: 'failed',
 				message: 'Preenchimento interrompido: outro atendimento assumiu o navegador do EVO.',
+				error: error instanceof Error ? error.message : String(error)
+			});
+			return;
+		}
+
+		updateJob(id, {
+			status: 'failed',
+			message: 'Falha ao iniciar o navegador EVO.',
+			error: error instanceof Error ? error.message : String(error)
+		});
+	} finally {
+		const final = jobs.get(id);
+		console.info(`[evo] job ${id}: ${final?.status ?? 'desconhecido'} — ${final?.message ?? ''}`);
+	}
+}
+
+async function runPlansJob(id: string, payload: EvoPlansPayload): Promise<void> {
+	console.info(`[evo] job ${id}: sincronizando planos.`);
+	try {
+		await runPlansJobAttempt(id, payload, false);
+	} catch (error) {
+		if (isCancelamento(error)) {
+			updateJob(id, {
+				status: 'failed',
+				message: 'Sincronização interrompida: outro atendimento assumiu o navegador do EVO.',
 				error: error instanceof Error ? error.message : String(error)
 			});
 			return;
@@ -100,6 +138,26 @@ async function runJobAttempt(id: string, payload: EvoPayload, retriedAfterDiscon
 	}
 }
 
+async function runPlansJobAttempt(id: string, payload: EvoPlansPayload, retriedAfterDisconnect: boolean): Promise<void> {
+	try {
+		await withEvoProfile(payload.credenciais.usuario, async ({ page }) => {
+			await syncEvoPlans(id, payload, page);
+		});
+	} catch (error) {
+		if (!retriedAfterDisconnect && isBrowserGoneError(error)) {
+			forgetEvoConnection(payload.credenciais.usuario);
+			updateJob(id, {
+				status: 'queued',
+				message: 'Navegador EVO foi fechado; reconectando e tentando novamente.'
+			});
+			await runPlansJobAttempt(id, payload, true);
+			return;
+		}
+
+		throw error;
+	}
+}
+
 async function fillEvoRegistration(id: string, payload: EvoPayload, page: Page): Promise<void> {
 	try {
 		updateJob(id, { status: 'running', message: 'Conectando à sessão do EVO no navegador.' });
@@ -125,6 +183,33 @@ async function fillEvoRegistration(id: string, payload: EvoPayload, page: Page):
 		updateJob(id, {
 			status: 'failed',
 			message: 'Falha ao preencher o EVO.',
+			error: error instanceof Error ? error.message : String(error),
+			screenshot
+		});
+	}
+}
+
+async function syncEvoPlans(id: string, payload: EvoPlansPayload, page: Page): Promise<void> {
+	try {
+		updateJob(id, { status: 'running', message: 'Conectando à sessão do EVO no navegador.' });
+		await garantirSessao(page, payload.credenciais, payload.unidade, TIMEOUT_MS);
+
+		updateJob(id, { message: 'Abrindo a tela de nova venda no EVO.' });
+		const plans = await listarContratosVenda(page, TIMEOUT_MS);
+		await page.bringToFront().catch(() => undefined);
+
+		updateJob(id, {
+			status: 'completed',
+			message: `${plans.length} contrato${plans.length === 1 ? '' : 's'} lido${plans.length === 1 ? '' : 's'} no EVO.`,
+			plans
+		});
+	} catch (error) {
+		if (isBrowserGoneError(error) || isCancelamento(error)) throw error;
+
+		const screenshot = await captureError(page);
+		updateJob(id, {
+			status: 'failed',
+			message: 'Falha ao ler os contratos do EVO.',
 			error: error instanceof Error ? error.message : String(error),
 			screenshot
 		});
@@ -168,6 +253,16 @@ async function captureError(page: Page): Promise<string | undefined> {
 	} catch {
 		return undefined;
 	}
+}
+
+function initialJob(id: string, message: string): EvoJobStatus {
+	return {
+		id,
+		status: 'queued',
+		message,
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString()
+	};
 }
 
 function setJob(id: string, status: EvoJobStatus): void {

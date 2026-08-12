@@ -29,7 +29,7 @@ app.use(
 		origin: (origin) => (allowAllOrigins ? origin : allowedOrigins.includes(origin) ? origin : undefined),
 		credentials: true,
 		allowHeaders: ['Content-Type'],
-		allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']
+		allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 	})
 );
 

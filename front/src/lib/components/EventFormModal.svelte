@@ -29,22 +29,24 @@
 		outcomeTypes,
 		lossReasons,
 		onClose,
-		onSaved
+		onSaved,
+		onPlansSynced
 	}: {
 		attendance: Attendance | null;
 		outcomeTypes: OutcomeType[];
 		lossReasons: LossReason[];
 		onClose: () => void;
 		onSaved: () => Promise<void> | void;
+		onPlansSynced?: () => Promise<void> | void;
 	} = $props();
 
 	const baseEventTypes: EventTypeOption[] = [
-		{ value: 'NOTE', label: 'Nota' },
 		{ value: 'SALE', label: 'Venda' },
 		{ value: 'LOSS', label: 'Perda' },
 		{ value: 'EXPERIMENTAL_CLASS_SCHEDULED', label: 'Aula experimental agendada' },
 		{ value: 'EXPERIMENTAL_CLASS_NOW', label: 'Aula experimental agora' },
 		{ value: 'FOLLOW_UP_SCHEDULED', label: 'Follow-up agendado' },
+		{ value: 'NOTE', label: 'Nota' },
 		{ value: 'OTHER', label: 'Outro evento' },
 		{ value: 'REOPEN', label: 'Reabrir atendimento' }
 	];
@@ -67,6 +69,7 @@
 	let eventForm = $state(createForm());
 	let evoBridgeAvailable = $state(false);
 	let evoLoading = $state(false);
+	let plansSyncBusy = $state(false);
 	let evoCredentials = $state<EvoCredentialsStatus | null>(null);
 	let sendToEvo = $state(true);
 	let evoRetryAttendanceId = $state<string | null>(null);
@@ -97,7 +100,7 @@
 
 	function createForm() {
 		return {
-			type: 'NOTE' as AttendanceEventType,
+			type: 'SALE' as AttendanceEventType,
 			outcomeTypeId: '',
 			manualLabel: '',
 			manualValue: '',
@@ -248,6 +251,81 @@
 		evoLog(`Job ${jobId} concluído: formulário do EVO preenchido.`);
 		messageKind = 'info';
 		message = 'Venda registrada. Formulário EVO preenchido; revise e salve manualmente.';
+	}
+
+	async function syncPlansFromEvo() {
+		if (plansSyncBusy) return;
+		if (!attendance) return;
+		if (!evoBridgeAvailable) {
+			messageKind = 'warning';
+			message = 'Bridge EVO indisponível. Abra o app Skyfit EVO para atualizar os planos.';
+			return;
+		}
+		if (!evoCredentialsConfigured) {
+			messageKind = 'warning';
+			message = 'Configure suas credenciais EVO em Conta antes de atualizar os planos.';
+			return;
+		}
+
+		const currentAttendance = attendance;
+		plansSyncBusy = true;
+		messageKind = 'info';
+		message = 'Buscando planos no EVO...';
+		evoLog(`Iniciando sincronização de planos EVO da academia ${currentAttendance.academy_id}.`);
+		try {
+			const { ticket } = await api<{ ticket: string; expiresAt: string }>('/api/evo/plans/ticket', {
+				method: 'POST',
+				body: JSON.stringify({ academyId: currentAttendance.academy_id })
+			});
+			const { jobId } = await evoApi<{ jobId: string }>('/evo/planos', {
+				method: 'POST',
+				body: JSON.stringify({ ticket })
+			});
+			evoLog(`Bridge aceitou a sincronização de planos e criou o job ${jobId}.`);
+
+			const job = await pollEvoJob(jobId);
+			if (job.status === 'failed') {
+				evoError(`Job ${jobId} terminou com falha: o bridge não conseguiu ler os planos do EVO.`, {
+					mensagem: job.message ?? null,
+					erro: job.error ?? null
+				});
+				throw new Error(job.error || job.message || 'Falha ao buscar os planos no EVO.');
+			}
+
+			const plans = job.plans ?? [];
+			if (!plans.length) {
+				throw new Error('O EVO não retornou planos para sincronizar.');
+			}
+
+			message = 'Sincronizando planos no tracker...';
+			const { created, skipped } = await api<{
+				created: OutcomeType[];
+				skipped: OutcomeType[];
+				outcomeTypes: OutcomeType[];
+			}>('/api/admin/outcome-types/sync', {
+				method: 'POST',
+				body: JSON.stringify({
+					plans: plans.map(({ nome, valorCents }) => ({ label: nome, valueCents: valorCents }))
+				})
+			});
+			await onPlansSynced?.();
+
+			const createdCount = created.length;
+			const skippedCount = skipped.length;
+			messageKind = 'info';
+			message = `Planos atualizados: ${createdCount} novo${createdCount === 1 ? '' : 's'} e ${skippedCount} já existente${skippedCount === 1 ? '' : 's'}.`;
+			evoLog(`Sincronização de planos EVO concluída pelo job ${jobId}.`, {
+				planosLidos: plans.length,
+				criados: createdCount,
+				ignorados: skippedCount
+			});
+		} catch (error) {
+			messageKind = 'error';
+			message = `Não foi possível atualizar os planos do EVO: ${errorMessage(error)}`;
+			evoError('Sincronização de planos EVO falhou.', { erro: describeError(error) });
+		} finally {
+			plansSyncBusy = false;
+		}
 	}
 
 	async function retryEvoSale() {
@@ -446,6 +524,18 @@
 							{/each}
 						</select>
 					</label>
+					{#if evoBridgeAvailable}
+						<div>
+							<button
+								type="button"
+								class="rounded-2xl border border-sky-200 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-50 disabled:opacity-60"
+								onclick={() => void syncPlansFromEvo()}
+								disabled={plansSyncBusy || evoLoading || busy}
+							>
+								{plansSyncBusy ? 'Atualizando planos...' : 'Atualizar planos do EVO'}
+							</button>
+						</div>
+					{/if}
 					{#if saleNeedsManual}
 						<div class="grid gap-4 sm:grid-cols-2">
 							<label class="text-sm font-medium text-slate-700"

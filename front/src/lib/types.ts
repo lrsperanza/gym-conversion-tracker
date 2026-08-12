@@ -36,7 +36,8 @@ export type AttendanceEventType =
 	| 'SCHEDULE_CANCELLED'
 	| 'OTHER'
 	| 'REOPEN'
-	| 'NOTE';
+	| 'NOTE'
+	| 'CLOSE';
 
 export type LeadEvent = {
 	id: string;
@@ -76,6 +77,7 @@ export type Attendance = {
 	closed_at?: string | null;
 	next_event_type?: AttendanceEventType | null;
 	next_scheduled_for?: string | null;
+	outcome_event_type?: 'SALE' | 'LOSS' | null;
 	lead_events_count?: number | null;
 };
 
@@ -126,11 +128,18 @@ export type EvoCredentialsStatus = {
 	username: string | null;
 };
 
+export type EvoScrapedPlan = {
+	id: string;
+	nome: string;
+	valorCents: number;
+};
+
 export type EvoJobStatus = {
 	id: string;
 	status: 'queued' | 'running' | 'completed' | 'failed';
 	message: string;
 	result?: Record<string, string>;
+	plans?: EvoScrapedPlan[];
 	error?: string;
 	screenshot?: string;
 	createdAt: string;

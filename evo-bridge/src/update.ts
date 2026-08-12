@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { mkdir, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -68,10 +69,33 @@ export async function applyDesktopUpdate(): Promise<{ version: string }> {
 	}
 
 	const destination = join(appDir(), `Skyfit-EVO-${latest.version}.exe`);
+	if (await alreadyDownloaded(destination, latest)) {
+		// The build is already on disk: either an earlier relaunch never happened, or the
+		// running app is this exact binary (an orphaned bridge from a previous version keeps
+		// reporting the old DESKTOP_APP_VERSION, so the front offers this "update" forever).
+		// Re-downloading would fail anyway — Windows refuses to rename over the running exe.
+		await createDesktopShortcut(destination);
+		scheduleRelaunch(destination, env.desktopPid ?? undefined);
+		return { version: latest.version };
+	}
 	await downloadBuild(latest, destination);
 	await createDesktopShortcut(destination);
 	scheduleRelaunch(destination, env.desktopPid ?? undefined);
 	return { version: latest.version };
+}
+
+async function alreadyDownloaded(destination: string, build: LatestDesktopBuild) {
+	if (!build.sha256) return false;
+	if (!(await Bun.file(destination).exists())) return false;
+	return (await sha256File(destination)) === build.sha256.toLowerCase();
+}
+
+async function sha256File(path: string) {
+	const hasher = createHash('sha256');
+	for await (const chunk of createReadStream(path)) {
+		hasher.update(chunk);
+	}
+	return hasher.digest('hex');
 }
 
 async function downloadBuild(build: LatestDesktopBuild, destination: string) {
@@ -102,7 +126,17 @@ async function downloadBuild(build: LatestDesktopBuild, destination: string) {
 		);
 	}
 
-	await rename(partial, destination);
+	try {
+		await rename(partial, destination);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | null)?.code;
+		if (code === 'EPERM' || code === 'EACCES' || code === 'EBUSY') {
+			throw new Error(
+				`O Windows bloqueou a substituição de ${destination} porque o arquivo está em uso (provavelmente é o aplicativo em execução). Feche o Skyfit EVO e abra de novo.`
+			);
+		}
+		throw error;
+	}
 }
 
 async function createDesktopShortcut(targetPath: string) {

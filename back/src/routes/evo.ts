@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { z } from 'zod';
 import { sql } from '../db/client';
 import { assertCanAccessAcademy, requireAuth } from '../http/auth';
 import { AppError, notFound, unauthorized } from '../http/errors';
 import { evoCredentialsSchema } from '../http/schemas';
 import type { AppBindings, SessionUser } from '../http/types';
 import { decryptEvoPassword, encryptEvoPassword } from '../security/evoCrypto';
-import { createEvoTicket, verifyEvoTicket } from '../security/evoTicket';
+import { createEvoPlansTicket, createEvoTicket, verifyEvoPlansTicket, verifyEvoTicket } from '../security/evoTicket';
 
 export const evoRoutes = new Hono<AppBindings>();
 
@@ -65,6 +66,50 @@ evoRoutes.post('/attendances/:id/ticket', requireAuth, async (c) => {
 	await assertAttendanceAccess(user, attendanceId);
 
 	return c.json(createEvoTicket(attendanceId, user.id));
+});
+
+evoRoutes.post('/plans/ticket', requireAuth, async (c) => {
+	const user = c.get('user');
+	const input = z.object({ academyId: z.string().uuid() }).parse(await c.req.json());
+	assertCanAccessAcademy(user, input.academyId);
+
+	return c.json(createEvoPlansTicket(user.id, input.academyId));
+});
+
+evoRoutes.get('/plans/payload', async (c) => {
+	const ticket = bearerToken(c.req.header('authorization'));
+	if (!ticket) throw unauthorized('Ticket EVO ausente.');
+
+	const ticketPayload = verifyEvoPlansTicket(ticket);
+	if (!ticketPayload?.academyId) throw unauthorized('Ticket EVO inválido ou expirado.');
+
+	const [row] = await sql<
+		Array<{
+			academy_name: string;
+			evo_unit_name: string | null;
+			evo_username: string | null;
+			evo_password_encrypted: string | null;
+		}>
+	>`
+		SELECT ac."name" AS academy_name, ac."evo_unit_name", u."evo_username", u."evo_password_encrypted"
+		FROM "gym-conversion-tracker"."academies" ac
+		JOIN "gym-conversion-tracker"."users" u ON u."id" = ${ticketPayload.userId}
+		WHERE ac."id" = ${ticketPayload.academyId}
+	`;
+	if (!row) throw notFound('Academia não encontrada.');
+	if (!row.evo_username || !row.evo_password_encrypted) {
+		throw new AppError(422, 'Informe as credenciais do EVO antes de atualizar os planos.', 'EVO_INCOMPLETE', [
+			'evoCredentials'
+		]);
+	}
+
+	return c.json({
+		credenciais: {
+			usuario: row.evo_username,
+			senha: decryptEvoPassword(row.evo_password_encrypted)
+		},
+		unidade: row.evo_unit_name || row.academy_name
+	});
 });
 
 evoRoutes.get('/attendances/:id/payload', async (c) => {

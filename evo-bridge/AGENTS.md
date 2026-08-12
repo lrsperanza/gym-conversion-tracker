@@ -35,7 +35,7 @@ Formas de subir: standalone, via `../gym-conversion-tracker-workspace/run-all.ps
 |--------|------|------|----------|
 | `GET` | `/evo/health` | — | `{ ok: true, service: 'evo-bridge' }` — é assim que o front detecta o bridge |
 | `GET` | `/evo/app-info` | — | `{ desktop, version, pid }` |
-| `POST` | `/evo/apply-update` | — | `{ ok: true, restarting: true, version }` ou 400 `UPDATE_FAILED` |
+| `POST` | `/evo/apply-update` | — | `{ ok: true, restarting: true, version }` ou 400 `UPDATE_FAILED`. Se o exe de destino já está em disco com SHA256 igual ao publicado, pula o download (renomear sobre o exe em execução daria EPERM) |
 | `POST` | `/evo/venda` | `{ attendanceId, ticket? }` | `202 { jobId }` |
 | `GET` | `/evo/status/:jobId` | — | `{ job }` ou 404 `NOT_FOUND` |
 | `DELETE` | `/evo/perfil` | `{ username }` | `{ ok: true }` — apaga o perfil Chrome daquele usuário EVO |

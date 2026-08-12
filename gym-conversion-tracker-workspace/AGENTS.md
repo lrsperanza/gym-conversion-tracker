@@ -17,12 +17,12 @@ Este folder é só orquestração (multi-root VS Code + `run-all.ps1` / `stop-al
 
 ## Topologia de runtime
 
-- **Stack local completo:** `.\run-all.ps1` → back `:3000` + bridge `:4000` (proxy `/api` → back, todo o resto → `FRONT_URL`). Acesse `http://localhost:4000`. Flags: `-Build`, `-FrontDev`, `-NoInstall`.
+- **Stack local completo:** `.\run-all.ps1` → back `:3000` + front dev `:5173` + bridge `:4000` com `FRONT_URL=http://localhost:5173` e `BACK_URL=http://localhost:3000`. Acesse `http://localhost:4000`. Flag: `-NoInstall`.
 - **Front-only dev:** Vite `:5173` → API em `PUBLIC_API_URL` (default `:3000`).
 - **Produção:** front Azure SWA; API GCP Cloud Run; desktop pode cair no front/API remotos.
 - **Recepção:** bridge/desktop abre Chrome via `evo-puppeteer` para preencher cadastro no EVO (sem salvar).
 
-O bridge **não serve `front/build` do disco** — ele faz proxy HTTP de `FRONT_URL` (default: SWA remoto). Para iterar no front local através do bridge, suba o Vite e rode o bridge com `FRONT_URL=http://localhost:5173`. `FRONT_DIST` no `.env.example` do bridge e a exigência de `front/build/index.html` no `run-all.ps1` são resíduos de uma versão anterior.
+O bridge **não serve `front/build` do disco** — ele faz proxy HTTP de `FRONT_URL` (default: SWA remoto; o `run-all.ps1` sempre injeta `http://localhost:5173`). `FRONT_DIST` no `.env.example` do bridge é resíduo de uma versão anterior.
 
 ## Dependências entre apps
 

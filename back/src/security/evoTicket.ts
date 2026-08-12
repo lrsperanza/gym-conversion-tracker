@@ -4,7 +4,9 @@ import { env } from '../config/env';
 const TICKET_TTL_SECONDS = 5 * 60;
 
 export type EvoTicketPayload = {
-	attendanceId: string;
+	purpose?: 'venda' | 'plans';
+	attendanceId?: string;
+	academyId?: string;
 	userId: string;
 	exp: number;
 	nonce: string;
@@ -12,7 +14,25 @@ export type EvoTicketPayload = {
 
 export function createEvoTicket(attendanceId: string, userId: string) {
 	const payload: EvoTicketPayload = {
+		purpose: 'venda',
 		attendanceId,
+		userId,
+		exp: Math.floor(Date.now() / 1000) + TICKET_TTL_SECONDS,
+		nonce: randomBytes(16).toString('base64url')
+	};
+	const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+	const signature = sign(encodedPayload);
+
+	return {
+		ticket: `${encodedPayload}.${signature}`,
+		expiresAt: new Date(payload.exp * 1000).toISOString()
+	};
+}
+
+export function createEvoPlansTicket(userId: string, academyId: string) {
+	const payload: EvoTicketPayload = {
+		purpose: 'plans',
+		academyId,
 		userId,
 		exp: Math.floor(Date.now() / 1000) + TICKET_TTL_SECONDS,
 		nonce: randomBytes(16).toString('base64url')
@@ -35,7 +55,24 @@ export function verifyEvoTicket(ticket: string, attendanceId: string): EvoTicket
 
 	const payload = parsePayload(encodedPayload);
 	if (!payload) return null;
+	if (payload.purpose === 'plans') return null;
 	if (payload.attendanceId !== attendanceId) return null;
+	if (payload.exp <= Math.floor(Date.now() / 1000)) return null;
+
+	return payload;
+}
+
+export function verifyEvoPlansTicket(ticket: string): EvoTicketPayload | null {
+	const [encodedPayload, signature] = ticket.split('.');
+	if (!encodedPayload || !signature) return null;
+
+	const expected = sign(encodedPayload);
+	if (!safeEqual(signature, expected)) return null;
+
+	const payload = parsePayload(encodedPayload);
+	if (!payload) return null;
+	if (payload.purpose !== 'plans') return null;
+	if (!payload.academyId) return null;
 	if (payload.exp <= Math.floor(Date.now() / 1000)) return null;
 
 	return payload;
@@ -45,7 +82,9 @@ function parsePayload(encodedPayload: string): EvoTicketPayload | null {
 	try {
 		const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as Partial<EvoTicketPayload>;
 		if (
-			typeof payload.attendanceId !== 'string' ||
+			(payload.purpose !== undefined && payload.purpose !== 'venda' && payload.purpose !== 'plans') ||
+			(payload.attendanceId !== undefined && typeof payload.attendanceId !== 'string') ||
+			(payload.academyId !== undefined && typeof payload.academyId !== 'string') ||
 			typeof payload.userId !== 'string' ||
 			typeof payload.exp !== 'number' ||
 			typeof payload.nonce !== 'string'

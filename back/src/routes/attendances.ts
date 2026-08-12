@@ -62,11 +62,19 @@ attendanceRoutes.get('/attendances', async (c) => {
 		SELECT a.*, l."name" AS lead_name, l."surname" AS lead_surname, l."cpf" AS lead_cpf,
 			l."birth_date" AS lead_birth_date, l."gender" AS lead_gender, l."cep" AS lead_cep,
 			l."visit_type" AS lead_visit_type, l."how_found_us" AS lead_how_found_us,
-			l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
-			next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for,
-			(
-				SELECT count(*)::int
-				FROM "gym-conversion-tracker"."attendance_events" lead_event
+		l."whatsapp_e164", l."email" AS lead_email, p."name" AS professor_name, u."name" AS receptionist_name,
+		next_schedule."type" AS next_event_type, next_schedule."scheduled_for" AS next_scheduled_for,
+		(
+			SELECT outcome_event."type"
+			FROM "gym-conversion-tracker"."attendance_events" outcome_event
+			WHERE outcome_event."attendance_id" = a."id"
+				AND outcome_event."type" IN ('SALE', 'LOSS')
+			ORDER BY outcome_event."created_at" DESC
+			LIMIT 1
+		) AS outcome_event_type,
+		(
+			SELECT count(*)::int
+			FROM "gym-conversion-tracker"."attendance_events" lead_event
 				JOIN "gym-conversion-tracker"."attendances" lead_attendance ON lead_attendance."id" = lead_event."attendance_id"
 				WHERE lead_attendance."lead_id" = a."lead_id"
 					AND (
@@ -519,6 +527,26 @@ attendanceRoutes.post('/attendances/:id/events', async (c) => {
 			return event;
 		}
 
+		if (input.type === 'CLOSE') {
+			if (attendance.status === 'FINALIZED') throw conflict('Atendimento já está finalizado.');
+			const [outcome] = await tx<Array<{ type: string }>>`
+				SELECT "type"
+				FROM "gym-conversion-tracker"."attendance_events"
+				WHERE "attendance_id" = ${attendanceId} AND "type" IN ('SALE', 'LOSS')
+				LIMIT 1
+			`;
+			if (!outcome) throw badRequest('Registre uma venda ou perda antes de fechar o atendimento.');
+
+			const [event] = await tx<Array<{ id: string }>>`
+				INSERT INTO "gym-conversion-tracker"."attendance_events" ("attendance_id", "actor_user_id", "type", "description")
+				VALUES (${attendanceId}, ${user.id}, 'CLOSE', ${input.description ?? null})
+				RETURNING *
+			`;
+			if (!event) throw new Error('Falha ao fechar atendimento.');
+			await tx`UPDATE "gym-conversion-tracker"."attendances" SET "status" = 'FINALIZED', "closed_at" = now(), "updated_at" = now() WHERE "id" = ${attendanceId}`;
+			return event;
+		}
+
 		if (input.type === 'SALE') {
 			const saleInfo = await resolveSale(input.outcomeTypeId ?? null, input.manualLabel, input.manualValueCents);
 			const [event] = await tx<Array<{ id: string }>>`
@@ -532,7 +560,7 @@ attendanceRoutes.post('/attendances/:id/events', async (c) => {
 					("attendance_id", "event_id", "outcome_type_id", "sold_by_user_id", "original_receptionist_id", "original_professor_id", "label_snapshot", "amount_cents")
 				VALUES (${attendanceId}, ${event.id}, ${saleInfo.outcomeTypeId}, ${user.id}, ${attendance.receptionist_id}, ${attendance.professor_id}, ${saleInfo.label}, ${saleInfo.amountCents})
 			`;
-			await tx`UPDATE "gym-conversion-tracker"."attendances" SET "status" = 'FINALIZED', "closed_at" = now(), "updated_at" = now() WHERE "id" = ${attendanceId}`;
+			await tx`UPDATE "gym-conversion-tracker"."attendances" SET "updated_at" = now() WHERE "id" = ${attendanceId}`;
 			return event;
 		}
 
@@ -555,7 +583,7 @@ attendanceRoutes.post('/attendances/:id/events', async (c) => {
 				INSERT INTO "gym-conversion-tracker"."attendance_losses" ("attendance_id", "event_id", "loss_reason_id", "description")
 				VALUES (${attendanceId}, ${event.id}, ${input.lossReasonId}, ${input.description ?? null})
 			`;
-			await tx`UPDATE "gym-conversion-tracker"."attendances" SET "status" = 'FINALIZED', "closed_at" = now(), "updated_at" = now() WHERE "id" = ${attendanceId}`;
+			await tx`UPDATE "gym-conversion-tracker"."attendances" SET "updated_at" = now() WHERE "id" = ${attendanceId}`;
 			return event;
 		}
 

@@ -231,6 +231,21 @@ export async function click(page: Page, selector: string, timeout: number): Prom
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+/**
+ * Dispara o clique pelo DOM assim que o elemento aparece, sem a janela de
+ * tentativa do clique real: nas telas em que um overlay sempre cobre o alvo
+ * (como a de nova venda do EVO) o clique real nunca passa, e esperar a janela
+ * só atrasa um desfecho já conhecido.
+ */
+export async function clickDom(page: Page, selector: string, timeout: number): Promise<void> {
+  const handle = await waitFor(page, selector, timeout);
+  try {
+    await handle.evaluate((el) => (el as HTMLElement).click());
+  } finally {
+    await handle.dispose();
+  }
+}
+
 async function limpar(page: Page, input: ElementHandle<Element>): Promise<void> {
   await input.click();
   await input.evaluate((el) => (el as HTMLInputElement).select());

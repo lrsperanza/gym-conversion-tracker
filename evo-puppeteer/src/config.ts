@@ -2,6 +2,14 @@ export const LOGIN_URL =
   //'https://evo-abc-2.w12app.com.br/#/acesso/skyfitacademia/autenticacao'
   'https://evo5.w12app.com.br/#/app/skyfitacademia/320/clientes/2054580//perfil';
 
+export const NOVA_VENDA_PATH =
+  '/#/app/skyfitacademia/320/clientes/cadastro/2119153//vendas/nova-venda';
+
+export function novaVendaUrl(baseUrl = LOGIN_URL): string {
+  const url = new URL(baseUrl);
+  return `${url.origin}${NOVA_VENDA_PATH}`;
+}
+
 /** O formulário de novo cadastro vive dentro deste drawer lateral. */
 export const DRAWER = 'evo-drawer#cadastroDrawer';
 
@@ -34,6 +42,11 @@ export const SELECTORS = {
     genero: 'sexo',
     tipoVisita: 'tipoVisita',
     comoConheceu: 'prospectMarketing',
+  },
+  venda: {
+    contratos: 'md-select#lstContratos',
+    valor: 'strong#valorVenda',
+    opcoesAbertas: '.md-select-menu-container.md-active md-option',
   },
 } as const;
 

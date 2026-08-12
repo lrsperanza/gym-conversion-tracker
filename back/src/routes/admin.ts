@@ -3,12 +3,14 @@ import { z } from 'zod';
 import { sql } from '../db/client';
 import { normalizeEmail, normalizeName, normalizePhone } from '../domain/normalize';
 import { createWithUniqueOutcomeTypeKey } from '../domain/outcomeTypeKey';
+import { buildPlanLabel } from '../domain/planLabel';
 import { assertCanAccessAcademy, canManageProfessor, canManageUserRole, hasAnyRole, requireAuth } from '../http/auth';
 import { conflict, forbidden, notFound } from '../http/errors';
 import {
 	academyInputSchema,
 	lossReasonInputSchema,
 	outcomeTypeInputSchema,
+	outcomeTypeSyncSchema,
 	professorInputSchema,
 	roleAssignmentSchema,
 	userInputSchema
@@ -273,11 +275,12 @@ adminRoutes.post('/outcome-types', async (c) => {
 	const user = c.get('user');
 	if (!hasAnyRole(user, ['ADMIN', 'SOCIO', 'GERENTE_REGIONAL', 'LIDER'])) throw forbidden();
 	const input = outcomeTypeInputSchema.parse(await c.req.json());
+	const plan = buildPlanLabel(input.label, input.currentValueCents ?? null);
 	const outcomeType = await createWithUniqueOutcomeTypeKey(async (key) => {
 		const [row] = await sql`
 			INSERT INTO "gym-conversion-tracker"."outcome_types"
 				("key", "label", "kind", "current_value_cents", "requires_manual_value", "active")
-			VALUES (${key}, ${input.label}, 'SALE', ${input.currentValueCents ?? null}, ${input.requiresManualValue ?? false}, ${input.active ?? true})
+			VALUES (${key}, ${plan.label}, 'SALE', ${plan.valueCents}, ${input.requiresManualValue ?? false}, ${input.active ?? true})
 			ON CONFLICT ("key") DO NOTHING
 			RETURNING *
 		`;
@@ -292,6 +295,52 @@ adminRoutes.post('/outcome-types', async (c) => {
 		c
 	});
 	return c.json({ outcomeType }, 201);
+});
+
+adminRoutes.post('/outcome-types/sync', async (c) => {
+	const user = c.get('user');
+	if (!hasAnyRole(user, ['ADMIN', 'SOCIO', 'GERENTE_REGIONAL', 'LIDER', 'RECEPCIONISTA'])) throw forbidden();
+	const input = outcomeTypeSyncSchema.parse(await c.req.json());
+	const existing = await sql<Array<{ label: string }>>`
+		SELECT "label" FROM "gym-conversion-tracker"."outcome_types"
+		WHERE "active" = true
+	`;
+	const seen = new Set(existing.map((row) => normalizePlanLabel(row.label)));
+	const created = [];
+	const skipped: Array<{ label: string; current_value_cents: number | null }> = [];
+
+	for (const item of input.plans) {
+		const plan = buildPlanLabel(item.label, item.valueCents);
+		const labelKey = normalizePlanLabel(plan.label);
+		if (seen.has(labelKey)) {
+			skipped.push({ label: plan.label, current_value_cents: plan.valueCents });
+			continue;
+		}
+		seen.add(labelKey);
+
+		const outcomeType = await createWithUniqueOutcomeTypeKey(async (key) => {
+			const [row] = await sql`
+				INSERT INTO "gym-conversion-tracker"."outcome_types"
+					("key", "label", "kind", "current_value_cents", "requires_manual_value", "active")
+				VALUES (${key}, ${plan.label}, 'SALE', ${plan.valueCents}, false, true)
+				ON CONFLICT ("key") DO NOTHING
+				RETURNING *
+			`;
+			return row;
+		});
+		created.push(outcomeType);
+		await audit({
+			actorUserId: user.id,
+			action: 'outcome_type.create',
+			entityType: 'outcome_type',
+			entityId: outcomeType.id,
+			payload: { source: 'evo', label: item.label, valueCents: item.valueCents },
+			c
+		});
+	}
+
+	const outcomeTypes = await sql`SELECT * FROM "gym-conversion-tracker"."outcome_types" ORDER BY "label"`;
+	return c.json({ created, skipped, outcomeTypes });
 });
 
 adminRoutes.patch('/outcome-types/:id', async (c) => {
@@ -352,4 +401,8 @@ adminRoutes.patch('/loss-reasons/:id', async (c) => {
 	await audit({ actorUserId: user.id, action: 'loss_reason.update', entityType: 'loss_reason', entityId: c.req.param('id'), payload: input, c });
 	return c.json({ lossReason: row });
 });
+
+function normalizePlanLabel(label: string): string {
+	return label.replace(/\s+/g, ' ').trim().toLowerCase();
+}
 

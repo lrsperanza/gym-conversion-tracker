@@ -23,12 +23,12 @@ Pontos do `tauri.conf.json` que costumam surpreender:
 
 1. `install_app()` em thread: copia o exe para `%LOCALAPPDATA%\SkyfitEVO\app\Skyfit-EVO-{version}.exe`, cria o atalho `Skyfit EVO.lnk` na área de trabalho e apaga versões antigas.
 2. `maybe_apply_update()`: `GET {back}/api/desktop/latest`; se houver versão maior, baixa, refaz o atalho, agenda relaunch por `cmd` destacado e `app.exit(0)`.
-3. Sonda um bridge que já esteja de pé (TCP + `GET /evo/health` em `127.0.0.1:4000`). Se responder, pula direto para a janela principal.
+3. Sonda um bridge que já esteja de pé (TCP + `GET /evo/health` em `127.0.0.1:4000`). Se responder, confere `GET /evo/app-info`: bridge de desktop com `version != APP_VERSION` (ou sem app-info) é um órfão de versão anterior — é morto pelo PID dono da porta (`Get-NetTCPConnection` + `Stop-Process`) e o boot segue para o spawn. Bridge standalone/dev (`desktop: false`) é adotado normalmente.
 4. `extract_payload()`: descomprime o `payload.tar.zst` embutido via `include_bytes!` para `%LOCALAPPDATA%\SkyfitEVO\runtime\{APP_VERSION}\`, guardando o marcador `.complete` com `SKYFIT_PAYLOAD_FINGERPRINT`. Timeout de 180s a frio, 45s a quente.
 5. `spawn_bridge()`: roda `bridge.exe` sem janela de console, com `BRIDGE_PORT`, `BACK_URL`, `FRONT_URL`, `DESKTOP_APP_VERSION`, `DESKTOP_PID`, `EVO_PERFIS_DIR`, `EVO_SCREENSHOTS_DIR`. Logs em `%LOCALAPPDATA%\SkyfitEVO\data\logs\bridge.{out,err}.log`.
 6. `wait_for_local_bridge()`: se subir, janela principal em `http://localhost:4000`. Se não, mostra erro no splash por 5s e cai para `configured_front_url()` (o SWA remoto) — **nesse modo o EVO não funciona**, porque não há bridge local. `watch_for_late_bridge()` ainda pode redirecionar a janela de volta para localhost por até 300s.
 
-O `back` **não** é iniciado pelo desktop; ele sempre usa a API remota. Ao sair, `kill_bridge()` derruba o filho, mas o Chrome do EVO é lançado destacado pelo bridge e continua aberto para preservar a sessão; no próximo start o bridge reconecta a essa janela. Segunda instância apenas foca a janela existente.
+O `back` **não** é iniciado pelo desktop; ele sempre usa a API remota. Ao sair, `kill_bridge()` derruba o filho — mas só bridges que **esta** instância spawneou: o relaunch do update usa `taskkill /F`, que não roda o handler de saída, então o bridge sobrevive órfão (é por isso que o passo 3 do boot evita adotar órfãos de outra versão). O Chrome do EVO é lançado destacado pelo bridge e continua aberto para preservar a sessão; no próximo start o bridge reconecta a essa janela. Segunda instância apenas foca a janela existente.
 
 URLs default compiladas quando `SKYFIT_*` não é passado no build:
 
@@ -64,7 +64,7 @@ Dois caminhos, mesma origem de verdade:
 | Startup (Rust) | Todo lançamento, antes do bridge | `maybe_apply_update()` em `main.rs` |
 | Em uso (bridge) | Pelo front | `POST /evo/apply-update` → `evo-bridge/src/update.ts` |
 
-Ambos consultam `GET {back}/api/desktop/latest`, que lista os blobs do Azure pelo prefixo, ordena por semver e devolve `{ version, fileName, size, publishedAt, sha256, downloadUrl }` com SAS de leitura de 30 min. Baixam para `%LOCALAPPDATA%\SkyfitEVO\app\`, conferem o SHA256, refazem o atalho e relançam com `taskkill` + `start`.
+Ambos consultam `GET {back}/api/desktop/latest`, que lista os blobs do Azure pelo prefixo, ordena por semver e devolve `{ version, fileName, size, publishedAt, sha256, downloadUrl }` com SAS de leitura de 30 min. Baixam para `%LOCALAPPDATA%\SkyfitEVO\app\`, conferem o SHA256, refazem o atalho e relançam com `taskkill` + `start`. Se o exe de destino já existe com o SHA256 igual ao publicado (download anterior cujo relaunch não aconteceu), os dois caminhos pulam o download e vão direto para atalho + relaunch — renomear sobre o exe em execução falharia com EPERM no Windows.
 
 **Não há assinatura de código nem chave de updater** — nem Authenticode, nem minisign/ed25519. A integridade é só o SHA256 gravado nos metadados do blob. É o ponto fraco conhecido da distribuição.
 

@@ -115,9 +115,17 @@ fn start_desktop(app: tauri::AppHandle, state: BridgeState) -> Result<(), String
         false,
     );
     if local_bridge_ready() {
-        open_main_window(&app, LOCAL_APP_URL)?;
-        close_splash(&app);
-        return Ok(());
+        if !stale_bridge_running() {
+            open_main_window(&app, LOCAL_APP_URL)?;
+            close_splash(&app);
+            return Ok(());
+        }
+        set_splash_message(&app, "Encerrando o bridge da versão anterior...", false);
+        kill_bridge_on_port();
+        let started = Instant::now();
+        while local_bridge_ready() && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(200));
+        }
     }
 
     set_splash_message(&app, "Extraindo runtime local...", false);
@@ -236,6 +244,21 @@ fn maybe_apply_update(app: &tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     }
 
+    // A build left on disk by an earlier update whose relaunch never happened is
+    // reusable as-is — no need to download it again.
+    if let Some(expected) = build.sha256.as_deref() {
+        let already_downloaded = destination.exists()
+            && sha256_file(&destination)
+                .map(|digest| digest.eq_ignore_ascii_case(expected))
+                .unwrap_or(false);
+        if already_downloaded {
+            let _ = create_desktop_shortcut(&destination);
+            set_splash_message(app, "Reiniciando na nova versão...", false);
+            schedule_relaunch(&destination, std::process::id())?;
+            return Ok(true);
+        }
+    }
+
     set_splash_message(
         app,
         &format!("Baixando atualização {}...", build.version),
@@ -279,6 +302,20 @@ fn report_update_problem(app: &tauri::AppHandle, message: &str) {
 
     set_splash_message(app, &format!("{message}.\nContinuando sem atualizar..."), false);
     thread::sleep(Duration::from_secs(3));
+}
+
+fn sha256_file(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Some(hex::encode(hasher.finalize()))
 }
 
 fn download_build(build: &LatestBuild, destination: &Path) -> Result<(), String> {
@@ -652,6 +689,66 @@ fn watch_for_late_bridge(app: tauri::AppHandle) {
         }
     });
 }
+
+#[derive(Deserialize)]
+struct BridgeAppInfo {
+    desktop: Option<bool>,
+    version: Option<String>,
+}
+
+/// The update relaunch hard-kills the desktop (taskkill /F), so the graceful exit that
+/// would kill the bridge never runs — and the bridge-initiated update path never kills
+/// it either. The orphan keeps answering the health probe, and adopting it poisons the
+/// update flow: it still reports the OLD DESKTOP_APP_VERSION, so the front "updates" to
+/// the version that is already running, and the download fails with EPERM when renaming
+/// over the live exe.
+fn stale_bridge_running() -> bool {
+    let info: Option<BridgeAppInfo> = ureq::get(&format!(
+        "http://{LOCAL_HEALTH_HOST}:{LOCAL_HEALTH_PORT}/evo/app-info"
+    ))
+    .timeout(Duration::from_secs(3))
+    .call()
+    .ok()
+    .and_then(|response| response.into_json().ok());
+
+    match info {
+        // Health answers but app-info doesn't: the bridge predates this endpoint.
+        None => true,
+        // A standalone/dev bridge carries no desktop version; the front disables the
+        // update flow on it, so adopting it is safe.
+        Some(BridgeAppInfo {
+            desktop: Some(false),
+            ..
+        }) => false,
+        Some(BridgeAppInfo { version, .. }) => version.as_deref() != Some(APP_VERSION),
+    }
+}
+
+/// Kills whatever listens on the bridge port. The orphan's PID is unknown to us
+/// (DESKTOP_PID belongs to the desktop, and an adopted bridge is never tracked in
+/// BridgeState), so look up the port owner instead of tracking processes.
+#[cfg(windows)]
+fn kill_bridge_on_port() {
+    let script = format!(
+        "$conn = Get-NetTCPConnection -LocalPort {LOCAL_HEALTH_PORT} -LocalAddress {LOCAL_HEALTH_HOST} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) {{ Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue }}"
+    );
+    let _ = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(windows))]
+fn kill_bridge_on_port() {}
 
 fn local_bridge_ready() -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], LOCAL_HEALTH_PORT));

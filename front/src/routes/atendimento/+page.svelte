@@ -42,6 +42,7 @@
 	let queueLoading = $state(false);
 	let attendanceMessage = $state('');
 	let attendanceBusy = $state(false);
+	let closingAttendanceId = $state<string | null>(null);
 	let quickDraft = $state<QuickDraft>(createQuickDraft());
 	let editing = $state<EditingTarget | null>(null);
 	let editingValue = $state('');
@@ -84,21 +85,25 @@
 		if (!session.user) return;
 		attendanceMessage = '';
 		try {
-			const [academyData, professorData, outcomeData, lossData] = await Promise.all([
+			const [academyData, professorData, lossData] = await Promise.all([
 				api<{ academies: Academy[] }>('/api/admin/academies'),
 				api<{ professors: Professor[] }>('/api/admin/professors'),
-				api<{ outcomeTypes: OutcomeType[] }>('/api/admin/outcome-types'),
-				api<{ lossReasons: LossReason[] }>('/api/admin/loss-reasons')
+				api<{ lossReasons: LossReason[] }>('/api/admin/loss-reasons'),
+				reloadOutcomeTypes()
 			]);
 			academies = academyData.academies;
 			professors = professorData.professors;
-			outcomeTypes = outcomeData.outcomeTypes;
 			lossReasons = lossData.lossReasons;
 			if (!quickDraft.academyId && activeAcademies[0]) quickDraft.academyId = activeAcademies[0].id;
 			await loadQueue();
 		} catch (error) {
 			attendanceMessage = errorMessage(error);
 		}
+	}
+
+	async function reloadOutcomeTypes() {
+		const data = await api<{ outcomeTypes: OutcomeType[] }>('/api/admin/outcome-types');
+		outcomeTypes = data.outcomeTypes;
 	}
 
 	async function loadProfessors() {
@@ -144,6 +149,32 @@
 			attendanceMessage = errorMessage(error);
 		} finally {
 			attendanceBusy = false;
+		}
+	}
+
+	async function closeAttendance(attendance: Attendance) {
+		if (!attendance.outcome_event_type || closingAttendanceId) return;
+		if (
+			browser &&
+			!window.confirm(
+				`Fechar o atendimento de ${attendance.lead_name}? Ele sairá da fila e poderá ser reaberto na aba Leads.`
+			)
+		) {
+			return;
+		}
+		closingAttendanceId = attendance.id;
+		attendanceMessage = '';
+		try {
+			await api<{ event: { id: string } }>(`/api/attendances/${attendance.id}/events`, {
+				method: 'POST',
+				body: JSON.stringify({ type: 'CLOSE' })
+			});
+			attendanceMessage = 'Atendimento fechado.';
+			await loadQueue();
+		} catch (error) {
+			attendanceMessage = errorMessage(error);
+		} finally {
+			closingAttendanceId = null;
 		}
 	}
 
@@ -379,6 +410,27 @@
 											)}
 										</span>
 									{/if}
+									{#if attendance.outcome_event_type}
+										<span
+											class={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${
+												attendance.outcome_event_type === 'SALE'
+													? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
+													: 'bg-red-50 text-red-800 ring-red-200'
+											}`}
+										>
+											{attendance.outcome_event_type === 'SALE'
+												? 'Venda registrada'
+												: 'Perda registrada'}
+										</span>
+										<button
+											type="button"
+											class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white hover:bg-slate-700 disabled:opacity-60"
+											onclick={() => void closeAttendance(attendance)}
+											disabled={closingAttendanceId === attendance.id}
+										>
+											{closingAttendanceId === attendance.id ? 'Fechando...' : 'Fechar atendimento'}
+										</button>
+									{/if}
 									<button
 										type="button"
 										class="rounded-xl bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-700"
@@ -530,6 +582,7 @@
 	{lossReasons}
 	onClose={() => (modalAttendance = null)}
 	onSaved={loadQueue}
+	onPlansSynced={reloadOutcomeTypes}
 />
 
 <ProfessorFormModal

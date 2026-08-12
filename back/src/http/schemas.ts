@@ -51,6 +51,15 @@ export const outcomeTypeInputSchema = z.object({
 	active: z.boolean().optional()
 });
 
+export const outcomeTypeSyncSchema = z.object({
+	plans: z.array(
+		z.object({
+			label: z.string().min(2),
+			valueCents: z.number().int().min(0)
+		})
+	)
+});
+
 export const lossReasonInputSchema = z.object({
 	label: z.string().min(2),
 	category: z.enum(['APPROACH', 'PRICE', 'STRUCTURE', 'LEAD_QUALITY', 'SCHEDULE_MODALITY']),
@@ -162,6 +171,10 @@ export const attendanceEventInputSchema = z.discriminatedUnion('type', [
 	z.object({
 		type: z.literal('NOTE'),
 		description: z.string().min(1)
+	}),
+	z.object({
+		type: z.literal('CLOSE'),
+		description: z.string().optional()
 	})
 ]);
 

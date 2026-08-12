@@ -1,20 +1,20 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Sobe back (:3000), evo-bridge (:4000, servindo o build do front) e o Puppeteer do EVO.
+  Sobe back (:3000), front dev (:5173) e evo-bridge (:4000, fazendo proxy para o front local).
 
 .DESCRIPTION
+  O bridge recebe FRONT_URL=http://localhost:5173 e BACK_URL=http://localhost:3000,
+  então http://localhost:4000 serve o front local (não o SWA remoto) com a API local.
   Os logs das partes aparecem multiplexados neste terminal. Ctrl+C (ou fechar o
   terminal) encerra todas as partes, inclusive o Chrome aberto pelo bridge.
 
 .EXAMPLE
   .\run-all.ps1
-  .\run-all.ps1 -SkipBuild -FrontDev
+  .\run-all.ps1 -NoInstall
 #>
 [CmdletBinding()]
 param(
-    [switch]$Build,      # Rebuilda front/build (PUBLIC_API_URL=/) antes de subir
-    [switch]$FrontDev,   # Também sobe o Vite dev server em http://localhost:5173
     [switch]$NoInstall   # Pula a verificação/instalação de dependências
 )
 
@@ -274,7 +274,7 @@ try {
 
     Assert-PortFree -Port 3000 -Name 'back'
     Assert-PortFree -Port 4000 -Name 'evo-bridge'
-    if ($FrontDev) { Assert-PortFree -Port 5173 -Name 'front-dev' }
+    Assert-PortFree -Port 5173 -Name 'front-dev'
 
     Ensure-Deps -Name 'back' -Dir $backDir
     Ensure-Deps -Name 'front' -Dir $frontDir
@@ -286,40 +286,24 @@ try {
         Write-Warning 'back\.env não encontrado. Copie back\.env.example e configure; a API pode falhar ao subir.'
     }
 
-    if ($Build) {
-        Write-Host 'Building front (PUBLIC_API_URL=/)...' -ForegroundColor Cyan
-        $previousApiUrl = $env:PUBLIC_API_URL
-        $env:PUBLIC_API_URL = '/'
-        Push-Location $frontDir
-        try {
-            & $script:BunPath run build
-            if ($LASTEXITCODE -ne 0) { throw 'Build do front falhou.' }
-        }
-        finally {
-            Pop-Location
-            $env:PUBLIC_API_URL = $previousApiUrl
-        }
-    }
-    elseif (-not (Test-Path (Join-Path $frontDir 'build\index.html'))) {
-        throw "Build do front não encontrado em front\build. Rode 'PUBLIC_API_URL=/ bun run build' na pasta front ou use -Build."
-    }
-
     $backPart = Start-Part -Name 'back' -WorkDir $backDir -Arguments @('run', 'dev') -Color Cyan
+    $frontPart = Start-Part -Name 'front-dev' -WorkDir $frontDir -Arguments @('run', 'dev') -Color Magenta
+    # O bridge faz proxy pela rede: sem FRONT_URL/BACK_URL ele cairia nos defaults de nuvem
+    $env:FRONT_URL = 'http://localhost:5173'
+    $env:BACK_URL = 'http://localhost:3000'
     # 'start' em vez de 'dev': --watch reiniciaria o server no meio de jobs Puppeteer
     $bridgePart = Start-Part -Name 'evo-bridge' -WorkDir $bridgeDir -Arguments @('run', 'start') -Color Green
-    if ($FrontDev) {
-        $null = Start-Part -Name 'front-dev' -WorkDir $frontDir -Arguments @('run', 'dev') -Color Magenta
-    }
     Save-PidFile
 
     Wait-Part -Part $backPart -Url 'http://localhost:3000/health'
+    Wait-Part -Part $frontPart -Url 'http://localhost:5173'
     Wait-Part -Part $bridgePart -Url 'http://localhost:4000/evo/health'
 
     Write-Host ''
     Write-Host 'All parts are running:' -ForegroundColor Green
-    Write-Host '  App (front + API via bridge): http://localhost:4000'
-    Write-Host '  API (back):                   http://localhost:3000'
-    if ($FrontDev) { Write-Host '  Front dev server (HMR):       http://localhost:5173' }
+    Write-Host '  App (front local + API local via bridge): http://localhost:4000'
+    Write-Host '  API (back):                               http://localhost:3000'
+    Write-Host '  Front dev server (HMR):                   http://localhost:5173'
     Write-Host '  evo-puppeteer: embutido no evo-bridge; o Chrome abre sob demanda ao registrar uma venda.'
     Write-Host ''
     Write-Host 'Press Ctrl+C to stop everything.' -ForegroundColor Yellow

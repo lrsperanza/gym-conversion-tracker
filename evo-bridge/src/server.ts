@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { deleteEvoProfile } from './browser.ts';
 import { env } from './env.ts';
-import { createEvoJob, getEvoJob, type EvoPayload } from './job.ts';
+import { createEvoJob, createPlansJob, getEvoJob, type EvoPayload, type EvoPlansPayload } from './job.ts';
 import { applyDesktopUpdate, desktopAppInfo } from './update.ts';
 
 const app = new Hono();
@@ -42,6 +42,22 @@ app.post('/evo/venda', async (c) => {
 
 	const payload = (await payloadResponse.json()) as EvoPayload;
 	const jobId = createEvoJob(payload);
+	return withCors(c.json({ jobId }, 202), c.req.raw);
+});
+
+app.post('/evo/planos', async (c) => {
+	const body = await c.req.json().catch(() => null);
+	if (!body || typeof body.ticket !== 'string' || !body.ticket) {
+		return withCors(c.json({ error: { code: 'BAD_REQUEST', message: 'Informe ticket.' } }, 400), c.req.raw);
+	}
+
+	const payloadResponse = await fetch(`${env.backUrl}/api/evo/plans/payload`, {
+		headers: { Authorization: `Bearer ${body.ticket}` }
+	});
+	if (!payloadResponse.ok) return withCors(await passthrough(payloadResponse), c.req.raw);
+
+	const payload = (await payloadResponse.json()) as EvoPlansPayload;
+	const jobId = createPlansJob(payload);
 	return withCors(c.json({ jobId }, 202), c.req.raw);
 });
 
