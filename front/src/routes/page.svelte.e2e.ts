@@ -151,6 +151,29 @@ test('starts an attendance with only the first name', async ({ page }) => {
 	);
 });
 
+test('starts an attendance without a name using the placeholder name', async ({ page }) => {
+	await mockSession(page, [{ role: 'RECEPCIONISTA', academyId: 'academy-1' }]);
+	await mockReferenceData(page);
+
+	let createdBody: Record<string, unknown> | null = null;
+	await page.route(`${API_ROUTE}/api/attendances**`, async (route) => {
+		if (route.request().method() === 'POST') {
+			createdBody = route.request().postDataJSON();
+			await json(route, { attendance: { ...pendingAttendance, id: 'att-2' } }, 201);
+			return;
+		}
+		await json(route, { attendances: [] });
+	});
+
+	await page.goto('/atendimento');
+	await page.getByRole('button', { name: 'Iniciar atendimento' }).click();
+
+	await expect.poll(() => createdBody).not.toBeNull();
+	expect(createdBody).toMatchObject({
+		lead: { name: 'INSERIR NOME' }
+	});
+});
+
 test('shows pending chips and saves phone, email and professor independently', async ({ page }) => {
 	await mockSession(page, [{ role: 'RECEPCIONISTA', academyId: 'academy-1' }]);
 	await mockReferenceData(page);

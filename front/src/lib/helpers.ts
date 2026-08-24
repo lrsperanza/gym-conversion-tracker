@@ -1,5 +1,5 @@
 import { ApiError } from '$lib/api/client';
-import type { Attendance, AttendanceEventType, Role } from '$lib/types';
+import type { Attendance, AttendanceChannel, AttendanceEventType, Role } from '$lib/types';
 
 export function errorMessage(error: unknown, fallback = 'Não foi possível concluir a ação.') {
 	if (error instanceof ApiError) {
@@ -16,6 +16,14 @@ export function statusLabel(status: string) {
 		FINALIZED: 'Finalizado'
 	};
 	return labels[status] ?? status;
+}
+
+export function channelLabel(channel?: AttendanceChannel | string | null) {
+	const labels: Record<AttendanceChannel, string> = {
+		PRESENCIAL: 'Presencial',
+		ONLINE: 'Online'
+	};
+	return channel === 'PRESENCIAL' || channel === 'ONLINE' ? labels[channel] : 'Presencial';
 }
 
 export function eventTypeLabel(type?: AttendanceEventType | string | null) {
@@ -76,7 +84,9 @@ export function isQueueVisible(
 export function parsePhone(raw: string) {
 	let digits = raw.replace(/\D/g, '');
 	if (digits.startsWith('55') && digits.length >= 12) digits = digits.slice(2);
-	if (digits.length < 10) return null;
+	if (digits.startsWith('0') && digits.length >= 11) digits = digits.slice(1);
+	if (digits.length < 8) return null;
+	if (digits.length <= 9) return { countryCode: '55', areaCode: '16', number: digits };
 	return { countryCode: '55', areaCode: digits.slice(0, 2), number: digits.slice(2) };
 }
 

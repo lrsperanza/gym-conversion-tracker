@@ -1,5 +1,7 @@
 export type Role = 'ADMIN' | 'SOCIO' | 'GERENTE_REGIONAL' | 'LIDER' | 'RECEPCIONISTA';
 
+export type AttendanceChannel = 'PRESENCIAL' | 'ONLINE';
+
 export type User = {
 	id: string;
 	name: string;
@@ -72,6 +74,7 @@ export type Attendance = {
 	receptionist_name: string;
 	professor_id?: string | null;
 	professor_name?: string | null;
+	channel: AttendanceChannel;
 	status: 'DRAFT' | 'IN_PROGRESS' | 'PENDING' | 'FINALIZED';
 	started_at: string;
 	closed_at?: string | null;
@@ -104,6 +107,13 @@ export type LeadSummary = {
 	next_event_type?: AttendanceEventType | null;
 	next_scheduled_for?: string | null;
 	events_count?: number | null;
+};
+
+export type LeadListPage = {
+	leads: LeadSummary[];
+	total: number;
+	page: number;
+	pageSize: number;
 };
 
 export type OutcomeType = {

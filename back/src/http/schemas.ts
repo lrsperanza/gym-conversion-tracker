@@ -118,7 +118,8 @@ export const evoCredentialsSchema = z.object({
 
 export const attendancePatchSchema = z.object({
 	professorId: z.string().uuid().optional().nullable(),
-	presenter: z.enum(['RECEPTIONIST', 'PROFESSOR']).optional()
+	presenter: z.enum(['RECEPTIONIST', 'PROFESSOR']).optional(),
+	channel: z.enum(['PRESENCIAL', 'ONLINE']).optional()
 });
 
 export const attendanceInputSchema = z.object({
@@ -127,7 +128,13 @@ export const attendanceInputSchema = z.object({
 	lead: leadInputSchema,
 	professorId: z.string().uuid().optional().nullable(),
 	presenter: z.enum(['RECEPTIONIST', 'PROFESSOR']).default('RECEPTIONIST'),
+	channel: z.enum(['PRESENCIAL', 'ONLINE']).default('PRESENCIAL'),
 	status: z.enum(['DRAFT', 'IN_PROGRESS']).default('IN_PROGRESS')
+});
+
+export const attendanceMergeLeadSchema = z.object({
+	leadId: z.string().uuid(),
+	lead: leadPatchSchema.pick({ name: true, email: true, phone: true }).optional()
 });
 
 export const attendanceEventInputSchema = z.discriminatedUnion('type', [

@@ -1,13 +1,15 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { api, dateTime } from '$lib/api/client';
+	import { ApiError, api, dateTime } from '$lib/api/client';
 	import Empty from '$lib/components/Empty.svelte';
 	import EventFormModal from '$lib/components/EventFormModal.svelte';
 	import LeadEventsTimeline from '$lib/components/LeadEventsTimeline.svelte';
+	import LeadMergeModal from '$lib/components/LeadMergeModal.svelte';
 	import LeadNameEditor from '$lib/components/LeadNameEditor.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import ProfessorFormModal from '$lib/components/ProfessorFormModal.svelte';
 	import {
+		channelLabel,
 		errorMessage,
 		eventTypeLabel,
 		isImminent,
@@ -17,17 +19,36 @@
 		statusLabel
 	} from '$lib/helpers';
 	import { getSessionContext } from '$lib/session';
-	import type { Academy, Attendance, LossReason, OutcomeType, Professor } from '$lib/types';
+	import type {
+		Academy,
+		Attendance,
+		AttendanceChannel,
+		LossReason,
+		OutcomeType,
+		Professor
+	} from '$lib/types';
 	import { onMount } from 'svelte';
 
 	type QuickDraft = {
 		name: string;
 		academyId: string;
+		channel: AttendanceChannel;
 	};
 	type EditingField = 'phone' | 'email' | 'professor';
 	type EditingTarget = {
 		attendanceId: string;
 		field: EditingField;
+	};
+	type LeadMergeCandidate = {
+		id: string;
+		name: string;
+		whatsapp_e164?: string | null;
+		email?: string | null;
+	};
+	type DraftLead = {
+		name?: string;
+		phone?: { countryCode: string; areaCode: string; number: string };
+		email?: string | null;
 	};
 
 	const DRAFT_KEY = 'attendance-quick-draft';
@@ -43,12 +64,16 @@
 	let attendanceMessage = $state('');
 	let attendanceBusy = $state(false);
 	let closingAttendanceId = $state<string | null>(null);
+	let channelBusyId = $state<string | null>(null);
 	let quickDraft = $state<QuickDraft>(createQuickDraft());
 	let editing = $state<EditingTarget | null>(null);
 	let editingValue = $state('');
 	let editingBusy = $state(false);
 	let modalAttendance = $state.raw<Attendance | null>(null);
 	let professorModalAttendance = $state.raw<Attendance | null>(null);
+	let mergeAttendance = $state.raw<Attendance | null>(null);
+	let mergeExistingLead = $state.raw<LeadMergeCandidate | null>(null);
+	let mergeDraftLead = $state.raw<DraftLead | null>(null);
 	let now = $state(new Date());
 	let activeAcademies = $derived(academies.filter((academy) => academy.active));
 	let visibleQueue = $derived(queue.filter((attendance) => isQueueVisible(attendance, now)));
@@ -63,7 +88,7 @@
 	});
 
 	function defaultQuickDraft(): QuickDraft {
-		return { name: '', academyId: '' };
+		return { name: '', academyId: '', channel: 'PRESENCIAL' };
 	}
 
 	function createQuickDraft() {
@@ -136,8 +161,9 @@
 				method: 'POST',
 				body: JSON.stringify({
 					academyId: quickDraft.academyId,
-					lead: { name: quickDraft.name.trim() },
+					lead: { name: quickDraft.name.trim() || 'INSERIR NOME' },
 					presenter: 'RECEPTIONIST',
+					channel: quickDraft.channel,
 					status: 'IN_PROGRESS'
 				})
 			});
@@ -209,6 +235,50 @@
 		});
 	}
 
+	function duplicateLeadFromError(error: unknown): LeadMergeCandidate | null {
+		if (!(error instanceof ApiError) || error.status !== 409) return null;
+		const details = error.details;
+		if (!details || typeof details !== 'object') return null;
+		const candidate = details as Record<string, unknown>;
+		if (typeof candidate.id !== 'string' || typeof candidate.name !== 'string') return null;
+		return {
+			id: candidate.id,
+			name: candidate.name,
+			whatsapp_e164: typeof candidate.whatsapp_e164 === 'string' ? candidate.whatsapp_e164 : null,
+			email: typeof candidate.email === 'string' ? candidate.email : null
+		};
+	}
+
+	function phoneFromAttendance(attendance: Attendance) {
+		return attendance.whatsapp_e164
+			? (parsePhone(attendance.whatsapp_e164) ?? undefined)
+			: undefined;
+	}
+
+	function openMergeModal(
+		attendance: Attendance,
+		existingLead: LeadMergeCandidate,
+		draftLead: DraftLead
+	) {
+		mergeAttendance = attendance;
+		mergeExistingLead = existingLead;
+		mergeDraftLead = draftLead;
+		cancelEdit();
+		attendanceMessage = 'Já existe um lead com este contato. Escolha quais dados manter.';
+	}
+
+	function closeMergeModal() {
+		mergeAttendance = null;
+		mergeExistingLead = null;
+		mergeDraftLead = null;
+	}
+
+	async function handleLeadMerged() {
+		closeMergeModal();
+		attendanceMessage = 'Lead vinculado ao atendimento.';
+		await loadQueue();
+	}
+
 	async function savePhone(attendance: Attendance) {
 		const phone = parsePhone(editingValue);
 		if (!phone) {
@@ -223,6 +293,15 @@
 			attendanceMessage = 'Número salvo.';
 			await loadQueue();
 		} catch (error) {
+			const duplicate = duplicateLeadFromError(error);
+			if (duplicate) {
+				openMergeModal(attendance, duplicate, {
+					name: attendance.lead_name,
+					phone,
+					email: attendance.lead_email
+				});
+				return;
+			}
 			attendanceMessage = errorMessage(error);
 		} finally {
 			editingBusy = false;
@@ -238,9 +317,36 @@
 			attendanceMessage = 'Email salvo.';
 			await loadQueue();
 		} catch (error) {
+			const duplicate = duplicateLeadFromError(error);
+			if (duplicate) {
+				openMergeModal(attendance, duplicate, {
+					name: attendance.lead_name,
+					phone: phoneFromAttendance(attendance),
+					email: editingValue.trim() || null
+				});
+				return;
+			}
 			attendanceMessage = errorMessage(error);
 		} finally {
 			editingBusy = false;
+		}
+	}
+
+	async function updateAttendanceChannel(attendance: Attendance, channel: AttendanceChannel) {
+		if (attendance.channel === channel || channelBusyId) return;
+		channelBusyId = attendance.id;
+		attendanceMessage = '';
+		try {
+			await api<{ attendance: Attendance }>(`/api/attendances/${attendance.id}`, {
+				method: 'PATCH',
+				body: JSON.stringify({ channel })
+			});
+			attendanceMessage = `Canal atualizado para ${channelLabel(channel)}.`;
+			await loadQueue();
+		} catch (error) {
+			attendanceMessage = errorMessage(error);
+		} finally {
+			channelBusyId = null;
 		}
 	}
 
@@ -326,7 +432,6 @@
 						placeholder="Ex.: Ana"
 						autocomplete="off"
 						minlength="2"
-						required
 					/>
 				</label>
 				<label class="text-sm font-medium text-slate-700">
@@ -341,6 +446,16 @@
 						{#each activeAcademies as academy (academy.id)}
 							<option value={academy.id}>{academy.name}</option>
 						{/each}
+					</select>
+				</label>
+				<label class="text-sm font-medium text-slate-700">
+					Canal
+					<select
+						class="mt-1 w-full rounded-2xl border-slate-300 text-lg"
+						bind:value={quickDraft.channel}
+					>
+						<option value="PRESENCIAL">Presencial</option>
+						<option value="ONLINE">Online</option>
 					</select>
 				</label>
 				<button
@@ -396,7 +511,7 @@
 										)}
 									</span>
 								</div>
-								<div class="flex shrink-0 flex-wrap items-center gap-2">
+								<div class="flex flex-wrap items-center gap-2">
 									{#if attendance.next_scheduled_for}
 										<span
 											class={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${
@@ -558,6 +673,27 @@
 											onclick={() => startEdit(attendance, 'professor')}>+ Professor</button
 										>
 									{/if}
+									<div
+										class="inline-flex rounded-full bg-slate-100 p-0.5 text-xs font-bold text-slate-600 ring-1 ring-slate-200"
+										aria-label={`Canal do atendimento de ${attendance.lead_name}`}
+									>
+										{#each ['PRESENCIAL', 'ONLINE'] as channel (channel)}
+											<button
+												type="button"
+												class={`rounded-full px-2 py-1 transition ${
+													attendance.channel === channel
+														? 'bg-white text-sky-800 shadow-sm'
+														: 'hover:bg-white/70'
+												}`}
+												onclick={() =>
+													void updateAttendanceChannel(attendance, channel as AttendanceChannel)}
+												disabled={channelBusyId === attendance.id || attendance.channel === channel}
+												aria-pressed={attendance.channel === channel}
+											>
+												{channelLabel(channel)}
+											</button>
+										{/each}
+									</div>
 								</div>
 							{/if}
 
@@ -590,4 +726,12 @@
 	academyName={professorModalAttendance ? academyName(professorModalAttendance.academy_id) : null}
 	onClose={() => (professorModalAttendance = null)}
 	onCreated={handleProfessorCreated}
+/>
+
+<LeadMergeModal
+	attendance={mergeAttendance}
+	existingLead={mergeExistingLead}
+	draftLead={mergeDraftLead}
+	onClose={closeMergeModal}
+	onMerged={handleLeadMerged}
 />

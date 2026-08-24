@@ -5,9 +5,10 @@
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage, queryString } from '$lib/helpers';
 	import { getSessionContext } from '$lib/session';
-	import type { LeadSummary } from '$lib/types';
+	import type { LeadListPage, LeadSummary } from '$lib/types';
 	import { onMount } from 'svelte';
 
+	const PAGE_SIZE = 25;
 	const { session } = getSessionContext();
 
 	let scheduledLeads = $state.raw<LeadSummary[]>([]);
@@ -19,10 +20,14 @@
 	let searchQuery = $state('');
 	let searchRequestId = 0;
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
+	let searchPage = $state(1);
+	let searchTotal = $state(0);
+	let searchPageSize = $state(PAGE_SIZE);
+	let searchTotalPages = $derived(Math.max(1, Math.ceil(searchTotal / searchPageSize)));
 
 	onMount(() => {
 		void loadScheduled();
-		void loadSearch('');
+		void loadSearch('', 1);
 		return () => {
 			if (searchTimer) window.clearTimeout(searchTimer);
 		};
@@ -44,16 +49,25 @@
 		}
 	}
 
-	async function loadSearch(query = searchQuery.trim()) {
+	async function loadSearch(query = searchQuery.trim(), page = searchPage) {
 		if (!session.user) return;
 		const requestId = ++searchRequestId;
 		searchLoading = true;
 		searchMessage = '';
 		try {
-			const data = await api<{ leads: LeadSummary[] }>(
-				`/api/leads${queryString({ search: query, limit: '50' })}`
+			const data = await api<LeadListPage>(
+				`/api/leads${queryString({
+					search: query,
+					page: String(page),
+					pageSize: String(PAGE_SIZE)
+				})}`
 			);
-			if (requestId === searchRequestId) searchLeads = data.leads;
+			if (requestId === searchRequestId) {
+				searchLeads = data.leads;
+				searchTotal = data.total;
+				searchPage = data.page;
+				searchPageSize = data.pageSize;
+			}
 		} catch (error) {
 			if (requestId === searchRequestId) searchMessage = errorMessage(error);
 		} finally {
@@ -62,16 +76,23 @@
 	}
 
 	async function refreshLeads() {
-		await Promise.all([loadScheduled(), loadSearch()]);
+		await Promise.all([loadScheduled(), loadSearch(searchQuery.trim(), searchPage)]);
 	}
 
 	function scheduleSearch(value: string) {
 		searchQuery = value;
+		searchPage = 1;
 		if (searchTimer) window.clearTimeout(searchTimer);
 		searchTimer = window.setTimeout(() => {
 			searchTimer = null;
-			void loadSearch(value.trim());
+			void loadSearch(value.trim(), 1);
 		}, 300);
+	}
+
+	function goToSearchPage(page: number) {
+		const nextPage = Math.min(Math.max(page, 1), searchTotalPages);
+		if (nextPage === searchPage) return;
+		void loadSearch(searchQuery.trim(), nextPage);
 	}
 </script>
 
@@ -146,6 +167,32 @@
 			{:else}
 				<Empty text="Nenhum lead encontrado para esta busca." />
 			{/if}
+
+			<div
+				class="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between"
+			>
+				<p class="font-semibold">
+					Página {searchPage} de {searchTotalPages} · {searchTotal} leads
+				</p>
+				<div class="flex gap-2">
+					<button
+						type="button"
+						class="rounded-xl border border-slate-300 bg-white px-4 py-2 font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+						onclick={() => goToSearchPage(searchPage - 1)}
+						disabled={searchLoading || searchPage <= 1}
+					>
+						Anterior
+					</button>
+					<button
+						type="button"
+						class="rounded-xl border border-slate-300 bg-white px-4 py-2 font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+						onclick={() => goToSearchPage(searchPage + 1)}
+						disabled={searchLoading || searchPage >= searchTotalPages}
+					>
+						Próxima
+					</button>
+				</div>
+			</div>
 		</div>
 	</section>
 </section>

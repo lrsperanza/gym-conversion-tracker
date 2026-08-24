@@ -6,6 +6,7 @@ import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import {
 	attendanceEventInputSchema,
 	attendanceInputSchema,
+	attendanceMergeLeadSchema,
 	attendancePatchSchema,
 	leadPatchSchema
 } from '../http/schemas';
@@ -158,8 +159,8 @@ attendanceRoutes.post('/attendances', async (c) => {
 
 		const [attendance] = await tx<Array<{ id: string }>>`
 			INSERT INTO "gym-conversion-tracker"."attendances"
-				("academy_id", "lead_id", "receptionist_id", "professor_id", "presenter", "status")
-			VALUES (${input.academyId}, ${lead.id}, ${user.id}, ${input.professorId ?? null}, ${input.presenter}, ${input.status})
+				("academy_id", "lead_id", "receptionist_id", "professor_id", "presenter", "channel", "status")
+			VALUES (${input.academyId}, ${lead.id}, ${user.id}, ${input.professorId ?? null}, ${input.presenter}, ${input.channel}, ${input.status})
 			RETURNING *
 		`;
 		if (!attendance) throw new Error('Falha ao criar atendimento.');
@@ -175,6 +176,104 @@ attendanceRoutes.post('/attendances', async (c) => {
 
 	await audit({ actorUserId: user.id, action: 'attendance.create', entityType: 'attendance', entityId: result.id, payload: input, c });
 	return c.json({ attendance: result }, 201);
+});
+
+attendanceRoutes.post('/attendances/:id/merge-lead', async (c) => {
+	const user = c.get('user');
+	const id = c.req.param('id');
+	const input = attendanceMergeLeadSchema.parse(await c.req.json());
+
+	const [attendance] = await sql<Array<{ id: string; academy_id: string; receptionist_id: string; lead_id: string }>>`
+		SELECT "id", "academy_id", "receptionist_id", "lead_id"
+		FROM "gym-conversion-tracker"."attendances"
+		WHERE "id" = ${id}
+	`;
+	if (!attendance) throw notFound();
+	if (attendance.receptionist_id !== user.id) assertCanAccessAcademy(user, attendance.academy_id);
+
+	const [existingLead] = await sql<Array<{ id: string }>>`
+		SELECT "id" FROM "gym-conversion-tracker"."leads" WHERE "id" = ${input.leadId}
+	`;
+	if (!existingLead) throw notFound('Lead existente não encontrado.');
+
+	const updates: Record<string, string | null> = {};
+	const leadInput = input.lead ?? {};
+	if (leadInput.name) {
+		updates.name = leadInput.name;
+		updates.normalized_name = normalizeName(leadInput.name);
+	}
+	if ('email' in leadInput) updates.email = normalizeEmail(leadInput.email);
+	if ('phone' in leadInput) {
+		if (leadInput.phone === null) {
+			updates.whatsapp_number = null;
+			updates.whatsapp_e164 = null;
+		} else if (leadInput.phone) {
+			const phone = normalizePhone(leadInput.phone);
+			updates.whatsapp_country_code = phone.countryCode;
+			updates.whatsapp_area_code = phone.areaCode;
+			updates.whatsapp_number = phone.number;
+			updates.whatsapp_e164 = phone.e164;
+		}
+	}
+
+	const result = await sql.begin(async (tx) => {
+		if (updates.whatsapp_e164 || updates.email) {
+			const [duplicate] = await tx`
+				SELECT "id", "name", "whatsapp_e164", "email"
+				FROM "gym-conversion-tracker"."leads"
+				WHERE "id" <> ${input.leadId}
+					AND (
+						(${updates.whatsapp_e164 ?? null}::text IS NOT NULL AND "whatsapp_e164" = ${updates.whatsapp_e164 ?? null})
+						OR (${updates.email ?? null}::text IS NOT NULL AND "email" = ${updates.email ?? null})
+					)
+				LIMIT 1
+			`;
+			if (duplicate) throw conflict('Outro lead já usa este telefone ou email.', duplicate);
+		}
+
+		if (Object.keys(updates).length) {
+			await tx`
+				UPDATE "gym-conversion-tracker"."leads"
+				SET ${sql(updates)}, "updated_at" = now()
+				WHERE "id" = ${input.leadId}
+			`;
+		}
+
+		await tx`
+			UPDATE "gym-conversion-tracker"."attendances"
+			SET "lead_id" = ${input.leadId}, "updated_at" = now()
+			WHERE "id" = ${id}
+		`;
+
+		if (attendance.lead_id !== input.leadId) {
+			await tx`
+				DELETE FROM "gym-conversion-tracker"."leads" placeholder
+				WHERE placeholder."id" = ${attendance.lead_id}
+					AND NOT EXISTS (
+						SELECT 1
+						FROM "gym-conversion-tracker"."attendances" linked_attendance
+						WHERE linked_attendance."lead_id" = placeholder."id"
+					)
+			`;
+		}
+
+		const [updated] = await tx`
+			SELECT *
+			FROM "gym-conversion-tracker"."attendances"
+			WHERE "id" = ${id}
+		`;
+		return updated;
+	});
+
+	await audit({
+		actorUserId: user.id,
+		action: 'attendance.merge_lead',
+		entityType: 'attendance',
+		entityId: id,
+		payload: input,
+		c
+	});
+	return c.json({ attendance: result });
 });
 
 attendanceRoutes.get('/attendances/:id', async (c) => {
@@ -240,6 +339,7 @@ attendanceRoutes.patch('/attendances/:id', async (c) => {
 		throw badRequest('Selecione o professor que apresentou a academia.');
 	}
 	if ('presenter' in input) updates.presenter = nextPresenter;
+	if ('channel' in input && input.channel) updates.channel = input.channel;
 	if (!Object.keys(updates).length) throw badRequest('Nada para atualizar.');
 
 	const [updated] = await sql`
@@ -257,8 +357,16 @@ attendanceRoutes.get('/leads', async (c) => {
 	const user = c.get('user');
 	const search = (c.req.query('search') || '').trim();
 	const scheduledOnly = c.req.query('scheduled') === 'upcoming';
-	const requestedLimit = Number(c.req.query('limit') || 50);
-	const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200) : 50;
+	const requestedPage = Number(c.req.query('page') || 1);
+	const page = Number.isFinite(requestedPage) ? Math.max(Math.trunc(requestedPage), 1) : 1;
+	const requestedPageSize = Number(c.req.query('pageSize') || c.req.query('limit') || (scheduledOnly ? 50 : 25));
+	const maxPageSize = scheduledOnly ? 200 : 100;
+	const pageSize = Number.isFinite(requestedPageSize)
+		? Math.min(Math.max(Math.trunc(requestedPageSize), 1), maxPageSize)
+		: scheduledOnly
+			? 50
+			: 25;
+	const offset = scheduledOnly ? 0 : (page - 1) * pageSize;
 	const normalizedSearch = normalizeName(search);
 	const searchPattern = `%${search}%`;
 	const phoneDigits = search.replace(/\D/g, '');
@@ -267,6 +375,7 @@ attendanceRoutes.get('/leads', async (c) => {
 
 	const rows = await sql`
 		SELECT
+			count(*) OVER ()::int AS total_count,
 			l."id",
 			l."name",
 			l."surname",
@@ -373,17 +482,20 @@ attendanceRoutes.get('/leads', async (c) => {
 			CASE WHEN ${normalizedSearch || null}::text IS NOT NULL THEN similarity(l."normalized_name", ${normalizedSearch || null}) END DESC NULLS LAST,
 			last_attendance."started_at" DESC NULLS LAST,
 			l."updated_at" DESC
-		LIMIT ${limit}
+		LIMIT ${pageSize}
+		OFFSET ${offset}
 	`;
+	const total = Number(rows[0]?.total_count ?? 0);
+	const leads = rows.map(({ total_count: _totalCount, ...row }) => row);
 
 	await audit({
 		actorUserId: user.id,
 		action: scheduledOnly ? 'lead.scheduled_list' : 'lead.search',
 		entityType: 'lead',
-		payload: { search, scheduled: scheduledOnly, limit },
+		payload: { search, scheduled: scheduledOnly, page, pageSize },
 		c
 	});
-	return c.json({ leads: rows });
+	return c.json({ leads, total, page, pageSize });
 });
 
 attendanceRoutes.get('/leads/:id/events', async (c) => {

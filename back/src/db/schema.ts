@@ -31,6 +31,8 @@ export const attendanceStatusEnum = gym.enum('attendance_status', [
 
 export const presenterEnum = gym.enum('presenter', ['RECEPTIONIST', 'PROFESSOR']);
 
+export const attendanceChannelEnum = gym.enum('attendance_channel', ['PRESENCIAL', 'ONLINE']);
+
 export const attendanceEventTypeEnum = gym.enum('attendance_event_type', [
 	'LEAD_CREATED',
 	'TOUR_RECEPTIONIST',
@@ -195,6 +197,7 @@ export const attendances = gym.table(
 			.references(() => users.id),
 		professorId: uuid('professor_id').references(() => professors.id),
 		presenter: presenterEnum('presenter').notNull(),
+		channel: attendanceChannelEnum('channel').notNull().default('PRESENCIAL'),
 		status: attendanceStatusEnum('status').notNull().default('IN_PROGRESS'),
 		startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
 		closedAt: timestamp('closed_at', { withTimezone: true }),
