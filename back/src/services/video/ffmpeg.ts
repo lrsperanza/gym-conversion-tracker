@@ -78,10 +78,17 @@ export type DownloadOptions = {
 	durationSeconds: number;
 	outputPath: string;
 	inputArgs?: string[];
+	/** Velocidade negociada com o DVR; acima de 1 o trecho chega comprimido no tempo. */
+	rate?: number;
 	signal?: AbortSignal;
 	verbose?: boolean;
 	onProgress?: (pct: number) => void;
 };
+
+/** Quanto tempo de video o ffmpeg vai escrever, ja considerando a compressao do Scale. */
+function outputSeconds(opts: DownloadOptions): number {
+	return Math.max(1, Math.ceil(opts.durationSeconds / Math.max(1, opts.rate ?? 1)));
+}
 
 const STALL_TIMEOUT_MS = 30_000;
 
@@ -166,8 +173,8 @@ async function spawnAttempt(argv: string[], opts: DownloadOptions): Promise<Atte
 				const match = /^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$/.exec(value);
 				if (match) seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
 			}
-			if (seconds !== null && opts.durationSeconds > 0) {
-				opts.onProgress?.(Math.min(100, (seconds / opts.durationSeconds) * 100));
+			if (seconds !== null) {
+				opts.onProgress?.(Math.min(100, (seconds / outputSeconds(opts)) * 100));
 			}
 		}
 	})();
@@ -181,6 +188,7 @@ async function spawnAttempt(argv: string[], opts: DownloadOptions): Promise<Atte
 }
 
 function baseArgs(opts: DownloadOptions): string[] {
+	const scaled = (opts.rate ?? 1) > 1;
 	return [
 		'-hide_banner',
 		'-nostdin',
@@ -189,19 +197,23 @@ function baseArgs(opts: DownloadOptions): string[] {
 		'-nostats',
 		'-progress',
 		'pipe:1',
+		// Em playback acelerado o DVR envia o primeiro pacote com um timestamp fora de
+		// ordem, o que embaralha todo o resto. Reconstruir pelo horario de chegada
+		// resolve isso e ainda entrega o trecho ja comprimido na velocidade pedida.
+		...(scaled ? ['-use_wallclock_as_timestamps', '1'] : []),
 		...(opts.inputArgs ?? ['-rtsp_transport', 'tcp', '-i', opts.url]),
 		'-t',
-		String(opts.durationSeconds),
+		String(outputSeconds(opts)),
 		'-map',
 		'0:v:0',
-		'-map',
-		'0:a?'
+		...(scaled ? [] : ['-map', '0:a?'])
 	];
 }
 
 export async function runFfmpegDownload(opts: DownloadOptions): Promise<void> {
 	const suffix = ['-movflags', '+frag_keyframe+empty_moov+default_base_moof', '-y', opts.outputPath];
-	const result = await spawnAttempt(['ffmpeg', ...baseArgs(opts), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '64k', ...suffix], opts);
+	const audioArgs = (opts.rate ?? 1) > 1 ? ['-an'] : ['-c:a', 'aac', '-b:a', '64k'];
+	const result = await spawnAttempt(['ffmpeg', ...baseArgs(opts), '-c:v', 'copy', ...audioArgs, ...suffix], opts);
 
 	if (result.killReason) {
 		throw new VideoExtractorError('RTSP_ERROR', result.killReason, result.stderrTail || undefined);

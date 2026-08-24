@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { tick } from 'svelte';
-	import { dateTime } from '$lib/api/client';
+	import { ApiError, dateTime } from '$lib/api/client';
 	import { createClip, clipStreamUrl, getClipJob, listClipCameras } from '$lib/api/clips';
 	import { errorMessage } from '$lib/helpers';
 	import type { AcademyCamera, ClipJob, LeadEvent } from '$lib/types';
@@ -73,10 +73,17 @@
 	let bufferedClockLabel = $derived(formatClockTime(bufferedOffsetSeconds));
 	let startClockLabel = $derived(formatClockTime(0));
 	let endClockLabel = $derived(formatClockTime(clipDurationSeconds));
+	// O DVR entrega o trecho já acelerado, então o arquivo nasce comprimido no tempo:
+	// o player roda em 1x e a velocidade aparece na conversão para hora do relógio.
+	let effectiveRate = $derived<PlaybackRate>(
+		job && PLAYBACK_RATES.includes(job.actualRate as PlaybackRate)
+			? (job.actualRate as PlaybackRate)
+			: selectedRate
+	);
 	let playerNote = $derived.by(() => {
 		if (!job) return '';
-		if (job.status === 'pulling' && job.actualRate) return `DVR em ${job.actualRate}x`;
-		if (job.actualRate && job.actualRate !== selectedRate) return `DVR em ${job.actualRate}x`;
+		if (effectiveRate !== selectedRate) return `O DVR não aceitou ${selectedRate}x; usando ${effectiveRate}x`;
+		if (effectiveRate > 1) return `${effectiveRate}x — o DVR envia só quadros-chave nessa velocidade`;
 		return '';
 	});
 
@@ -131,6 +138,19 @@
 		isSeeking = false;
 	}
 
+	function expireClipSession() {
+		++pollToken;
+		++streamToken;
+		submitting = false;
+		videoUrl = null;
+		videoElement = null;
+		isBuffering = false;
+		isSeeking = false;
+		isPlaying = false;
+		messageKind = 'warning';
+		message = 'Esta sessão de vídeo expirou. Gere o clipe novamente para continuar.';
+	}
+
 	function validateInterval(maxDurationMinutes: number) {
 		const duration = intervalDurationMinutes();
 		if (duration === null) return 'Informe datas válidas para início e fim.';
@@ -170,9 +190,14 @@
 		return 'Linha do tempo pronta para navegar.';
 	}
 
+	/** Acima de 1x o trecho já vem comprimido no tempo, então 1s de vídeo vale `effectiveRate` segundos de relógio. */
+	function toClipOffset(videoSeconds: number) {
+		return clampOffset(baseOffsetSeconds + videoSeconds * effectiveRate);
+	}
+
 	function currentVideoOffset() {
 		if (!videoElement) return currentOffsetSeconds;
-		return clampOffset(baseOffsetSeconds + videoElement.currentTime);
+		return toClipOffset(videoElement.currentTime);
 	}
 
 	function updateTimelineFromVideo() {
@@ -180,14 +205,14 @@
 		if (!isSeeking) currentOffsetSeconds = currentVideoOffset();
 		if (videoElement.buffered.length > 0) {
 			const lastRange = videoElement.buffered.length - 1;
-			bufferedOffsetSeconds = clampOffset(baseOffsetSeconds + videoElement.buffered.end(lastRange));
+			bufferedOffsetSeconds = toClipOffset(videoElement.buffered.end(lastRange));
 		}
 	}
 
 	function applyVideoSettings() {
 		if (!videoElement) return;
-		videoElement.defaultPlaybackRate = selectedRate;
-		videoElement.playbackRate = selectedRate;
+		videoElement.defaultPlaybackRate = 1;
+		videoElement.playbackRate = 1;
 		videoElement.muted = isMuted;
 	}
 
@@ -235,6 +260,34 @@
 		isBuffering = true;
 	}
 
+	function handleVideoError() {
+		if (!videoUrl) return;
+		void handlePlaybackFailure();
+	}
+
+	async function handlePlaybackFailure() {
+		const jobId = job?.id;
+		if (!jobId) {
+			isBuffering = false;
+			return;
+		}
+		try {
+			await getClipJob(jobId);
+			if (!videoUrl) return;
+			isBuffering = false;
+			messageKind = 'error';
+			message = 'Não foi possível reproduzir este trecho.';
+		} catch (error) {
+			if (error instanceof ApiError && error.status === 404) {
+				expireClipSession();
+				return;
+			}
+			isBuffering = false;
+			messageKind = 'error';
+			message = errorMessage(error, 'Não foi possível reproduzir este trecho.');
+		}
+	}
+
 	function handleVolumeChange() {
 		if (!videoElement) return;
 		isMuted = videoElement.muted;
@@ -274,13 +327,32 @@
 			if (token !== pollToken || requestToken !== streamToken) return false;
 			applyVideoSettings();
 			await tryPlayVideo();
+			void refreshNegotiatedRate(token, requestToken);
 			return true;
 		} catch (error) {
 			if (token !== pollToken || requestToken !== streamToken) return false;
+			if (error instanceof ApiError && error.status === 404) {
+				expireClipSession();
+				return false;
+			}
 			isBuffering = false;
 			messageKind = 'error';
 			message = errorMessage(error, 'Não foi possível carregar o ponto selecionado.');
 			return false;
+		}
+	}
+
+	/** A velocidade real só é conhecida depois que o back negocia com o DVR. */
+	async function refreshNegotiatedRate(token: number, requestToken: number) {
+		const jobId = job?.id;
+		if (!jobId) return;
+		await delay(1_500);
+		if (token !== pollToken || requestToken !== streamToken) return;
+		try {
+			const refreshed = await getClipJob(jobId);
+			if (token === pollToken && requestToken === streamToken) job = refreshed;
+		} catch (error) {
+			if (error instanceof ApiError && error.status === 404) expireClipSession();
 		}
 	}
 
@@ -291,7 +363,7 @@
 	}
 
 	async function changePlaybackRate(nextRate: PlaybackRate) {
-		if (nextRate === selectedRate && videoElement?.playbackRate === nextRate) return;
+		if (nextRate === selectedRate) return;
 		const targetOffset = currentVideoOffset();
 		selectedRate = nextRate;
 		applyVideoSettings();
@@ -325,6 +397,10 @@
 				currentJob = await getClipJob(currentJob.id);
 			} catch (error) {
 				if (token !== pollToken) return;
+				if (error instanceof ApiError && error.status === 404) {
+					expireClipSession();
+					return;
+				}
 				messageKind = 'warning';
 				message = errorMessage(error, 'Não foi possível atualizar o status do DVR.');
 				continue;
@@ -597,6 +673,7 @@
 													onended={handlePause}
 													onwaiting={handleWaiting}
 													onstalled={handleWaiting}
+													onerror={handleVideoError}
 													onprogress={updateTimelineFromVideo}
 													ontimeupdate={updateTimelineFromVideo}
 													onvolumechange={handleVolumeChange}

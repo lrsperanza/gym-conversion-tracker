@@ -30,7 +30,8 @@ app.use(
 	cors({
 		origin: (origin) => (allowAllOrigins ? origin : allowedOrigins.includes(origin) ? origin : undefined),
 		credentials: true,
-		allowHeaders: ['Content-Type'],
+		allowHeaders: ['Content-Type', 'Range'],
+		exposeHeaders: ['Accept-Ranges', 'Content-Range', 'Content-Length'],
 		allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 	})
 );
@@ -84,6 +85,7 @@ app.route('/api', dashboardRoutes);
 
 Bun.serve({
 	port: env.port,
+	idleTimeout: 255,
 	fetch: app.fetch
 });
 

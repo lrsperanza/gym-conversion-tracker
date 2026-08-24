@@ -8,7 +8,8 @@ import type { AppBindings } from '../http/types';
 import { decryptCameraPassword } from '../security/cameraCrypto';
 import { parseTimestamp, validateRange } from '../services/video/datetime';
 import { VideoExtractorError } from '../services/video/errors';
-import { createClipJob, getClipJob, isClipRate, setClipPosition, type ClipJob } from '../services/video/jobs';
+import { parseRangeHeader } from '../services/video/byteRange';
+import { createClipJob, getClipJob, getClipPull, isClipRate, setClipPosition, type ClipJob, type ClipPull } from '../services/video/jobs';
 
 export const clipRoutes = new Hono<AppBindings>();
 
@@ -206,6 +207,41 @@ function parseRate(value: string | undefined) {
 	return rate;
 }
 
+async function completedClipResponse(pull: ClipPull, filename: string, rangeHeader: string | undefined) {
+	const file = Bun.file(pull.path);
+	if (!(await file.exists())) throw conflict('Arquivo do trecho nao esta mais disponivel.');
+	const size = file.size;
+	const range = parseRangeHeader(rangeHeader, size);
+	const headers = {
+		...clipHeaders(filename),
+		'Accept-Ranges': 'bytes',
+		'Cache-Control': 'no-store'
+	};
+
+	if (range === 'invalid') {
+		return new Response(null, {
+			status: 416,
+			headers: { ...headers, 'Content-Range': `bytes */${size}` }
+		});
+	}
+
+	if (range) {
+		return new Response(file.slice(range.start, range.end + 1), {
+			status: 206,
+			headers: {
+				...headers,
+				'Content-Length': String(range.end - range.start + 1),
+				'Content-Range': `bytes ${range.start}-${range.end}/${size}`
+			}
+		});
+	}
+
+	return new Response(file, {
+		status: 200,
+		headers: { ...headers, 'Content-Length': String(size) }
+	});
+}
+
 function streamGrowingClip(jobId: string, streamSeq: number): ReadableStream<Uint8Array> {
 	let cancelled = false;
 	return new ReadableStream<Uint8Array>({
@@ -214,21 +250,17 @@ function streamGrowingClip(jobId: string, streamSeq: number): ReadableStream<Uin
 				let offset = 0;
 				try {
 					while (!cancelled) {
-						const currentJob = getClipJob(jobId);
-						if (!currentJob || currentJob.streamSeq !== streamSeq) {
+						const pull = getClipPull(jobId, streamSeq);
+						if (!pull) {
 							controller.close();
 							return;
 						}
-						if (currentJob.status === 'failed') {
-							controller.close();
-							return;
-						}
-						if (!currentJob.partialPath) {
+						if (pull.state === 'failed') {
 							controller.close();
 							return;
 						}
 
-						const file = Bun.file(currentJob.partialPath);
+						const file = Bun.file(pull.path);
 						if (await file.exists()) {
 							const size = file.size;
 							if (size > offset) {
@@ -241,7 +273,7 @@ function streamGrowingClip(jobId: string, streamSeq: number): ReadableStream<Uin
 								}
 							}
 
-							if (currentJob.status === 'idle') {
+							if (pull.state === 'complete') {
 								controller.close();
 								return;
 							}
@@ -267,13 +299,19 @@ clipRoutes.get('/clips/jobs/:jobId/stream', async (c) => {
 	if (job.userId !== user.id) throw forbidden();
 	const positioned = await setClipPosition(job.id, parseAt(c.req.query('at')), parseRate(c.req.query('rate')));
 	if (!positioned) throw notFound();
-	if (positioned.status === 'failed') throw conflict(positioned.error || 'Falha ao gerar o clipe.');
-	if (!positioned.partialPath) throw conflict('Ponto do clipe nao possui stream ativo.');
+	if (positioned.job.status === 'failed') throw conflict(positioned.job.error || 'Falha ao gerar o clipe.');
+	if (!positioned.pull) throw conflict('Ponto do clipe nao possui stream ativo.');
+	if (positioned.pull.state === 'failed') throw conflict(positioned.pull.error || 'Falha ao gerar o clipe.');
+	const filename = `${positioned.job.id}.${positioned.pull.seq}.mp4`;
+	if (positioned.pull.state === 'complete') {
+		return await completedClipResponse(positioned.pull, filename, c.req.header('range'));
+	}
 
-	return new Response(streamGrowingClip(positioned.id, positioned.streamSeq), {
+	return new Response(streamGrowingClip(positioned.job.id, positioned.pull.seq), {
 		status: 200,
 		headers: {
-			...clipHeaders(`${positioned.id}.${positioned.streamSeq}.mp4`),
+			...clipHeaders(filename),
+			'Accept-Ranges': 'none',
 			'Cache-Control': 'no-store'
 		}
 	});

@@ -6,7 +6,7 @@ import { decryptCameraPassword } from '../security/cameraCrypto';
 import { formatDvrTimestamp, formatFilenameTimestamp, parseTimestamp, validateRange } from '../services/video/datetime';
 import { ensureFfmpegTools, probeFile, runFfmpegDownload } from '../services/video/ffmpeg';
 import { buildPlaybackUrl } from '../services/video/intelbras';
-import { openScaledPlayback, type ClipRate, type ScaledPlaybackSession } from '../services/video/rtspScale';
+import { probeScaleSupport, startScaledRtspProxy, type ClipRate, type ScaledRtspProxy } from '../services/video/rtspScale';
 
 type Args = {
 	cameraId?: string;
@@ -111,20 +111,24 @@ async function main() {
 	const outputPath = join(outputDir, fileName);
 	const partialPath = `${outputPath}.partial.mp4`;
 	const durationSeconds = Math.max(1, Math.ceil((end.getTime() - effectiveStart.getTime()) / 1000));
-	let scaled: ScaledPlaybackSession | null = null;
+	const secrets = [playback.url, password, encodeURIComponent(password)];
+	let proxy: ScaledRtspProxy | null = null;
 	let inputArgs: string[] | undefined;
+	let acceptedRate: ClipRate = 1;
 	if (requestedRate > 1) {
-		scaled = await openScaledPlayback({
+		const accepted = await probeScaleSupport({
 			url: playback.url,
 			redactedUrl: playback.redacted,
 			username: camera.username,
 			password,
-			rate: requestedRate,
-			sdpDir: outputDir
+			rate: requestedRate
 		});
-		if (scaled) {
-			inputArgs = scaled.inputArgs;
-			console.info(`Velocidade negociada com DVR: ${scaled.actualRate}x`);
+		if (accepted) {
+			proxy = await startScaledRtspProxy({ url: playback.url, rate: accepted });
+			inputArgs = ['-rtsp_transport', 'tcp', '-i', proxy.url];
+			acceptedRate = accepted;
+			secrets.push(proxy.url);
+			console.info(`Velocidade negociada com DVR: ${accepted}x`);
 		} else {
 			console.info('DVR nao aceitou velocidade alta; usando fallback 1x.');
 		}
@@ -134,10 +138,11 @@ async function main() {
 		await runFfmpegDownload({
 			url: playback.url,
 			redactedUrl: playback.redacted,
-			secrets: [playback.url, password, encodeURIComponent(password)],
+			secrets,
 			durationSeconds,
 			outputPath: partialPath,
 			inputArgs,
+			rate: acceptedRate,
 			verbose: true,
 			onProgress: (progress) => console.info(`Progresso: ${Math.round(progress)}%`)
 		});
@@ -146,7 +151,7 @@ async function main() {
 		await rename(partialPath, outputPath);
 		console.info(outputPath);
 	} finally {
-		scaled?.close();
+		proxy?.close();
 	}
 }
 

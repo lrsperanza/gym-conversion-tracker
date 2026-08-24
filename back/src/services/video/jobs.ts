@@ -4,7 +4,7 @@ import { env } from '../../config/env';
 import { formatDvrTimestamp } from './datetime';
 import { ensureFfmpegTools, runFfmpegDownload } from './ffmpeg';
 import { buildPlaybackUrl, type DvrCredentials } from './intelbras';
-import { openScaledPlayback, type ClipRate, type ScaledPlaybackSession } from './rtspScale';
+import { CLIP_RATES, probeScaleSupport, startScaledRtspProxy, type ClipRate, type ScaledRtspProxy } from './rtspScale';
 
 export type ClipJobStatus = 'idle' | 'pulling' | 'failed';
 
@@ -42,28 +42,32 @@ export type CreateClipJobInput = {
 	dvr: DvrCredentials;
 };
 
-type ActiveSession = {
+export type ClipPullState = 'pulling' | 'complete' | 'failed';
+
+export type ClipPull = {
 	seq: number;
 	atSeconds: number;
 	requestedRate: ClipRate;
 	actualRate: ClipRate;
-	partialPath: string;
+	path: string;
+	state: ClipPullState;
+	error?: string;
+	createdAt: number;
+	updatedAt: number;
 	abort: AbortController;
-	scaled?: ScaledPlaybackSession;
+	proxy?: ScaledRtspProxy;
 };
 
 type InternalClipJob = ClipJob & {
 	input: CreateClipJobInput;
-	session?: ActiveSession;
-	partialPaths: Set<string>;
+	pulls: Map<string, ClipPull>;
 };
 
 const jobs = new Map<string, InternalClipJob>();
 const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let activeJobs = 0;
 const waiters: Array<() => void> = [];
-
-export const CLIP_RATES: ClipRate[] = [1, 2, 4, 8];
+const MAX_RETAINED_PULLS = 3;
 
 export function isClipRate(value: number): value is ClipRate {
 	return CLIP_RATES.includes(value as ClipRate);
@@ -73,6 +77,10 @@ function updateJob(id: string, patch: Partial<ClipJob>) {
 	const current = jobs.get(id);
 	if (!current) return;
 	jobs.set(id, { ...current, ...patch, updatedAt: new Date().toISOString() });
+}
+
+function delay(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function acquireSlot() {
@@ -95,12 +103,12 @@ function scheduleCleanup(id: string) {
 	if (existing) clearTimeout(existing);
 	const timer = setTimeout(() => {
 		const job = jobs.get(id);
-		if (job) stopSession(job);
+		if (job) stopPulls(job);
 		jobs.delete(id);
 		cleanupTimers.delete(id);
 		if (job) {
-			for (const path of job.partialPaths) {
-				void unlink(path).catch(() => undefined);
+			for (const pull of job.pulls.values()) {
+				void unlinkWithRetry(pull.path);
 			}
 		}
 	}, env.video.clipTtlMinutes * 60 * 1000);
@@ -117,38 +125,73 @@ function clampPosition(input: CreateClipJobInput, atSeconds: number) {
 	return Math.max(0, Math.min(duration, Math.floor(atSeconds)));
 }
 
-function stopSession(job: InternalClipJob) {
-	job.session?.abort.abort();
-	job.session?.scaled?.close();
-	job.session = undefined;
+function pullKey(atSeconds: number, rate: ClipRate) {
+	return `${atSeconds}:${rate}`;
 }
 
-function deleteOldPartials(job: InternalClipJob, keepPath: string) {
-	for (const path of [...job.partialPaths]) {
-		if (path === keepPath) continue;
-		job.partialPaths.delete(path);
-		void unlink(path).catch(() => undefined);
+function stopPull(pull: ClipPull) {
+	if (pull.state === 'pulling') {
+		pull.abort.abort();
+		pull.state = 'failed';
+		pull.error = 'Pull substituido.';
+	}
+	pull.proxy?.close();
+	pull.proxy = undefined;
+	pull.updatedAt = Date.now();
+}
+
+function stopPulls(job: InternalClipJob, keepPull?: ClipPull) {
+	for (const [key, pull] of [...job.pulls.entries()]) {
+		if (pull === keepPull || pull.state !== 'pulling') continue;
+		stopPull(pull);
+		job.pulls.delete(key);
+		void unlinkWithRetry(pull.path);
+	}
+}
+
+async function unlinkWithRetry(path: string) {
+	for (let attempt = 1; attempt <= 3; attempt += 1) {
+		try {
+			await unlink(path);
+			return;
+		} catch {
+			if (attempt === 3) return;
+			await delay(250);
+		}
+	}
+}
+
+function prunePulls(job: InternalClipJob, keepPull?: ClipPull) {
+	const sorted = [...job.pulls.entries()]
+		.filter(([, pull]) => pull.state !== 'pulling')
+		.sort(([, a], [, b]) => b.updatedAt - a.updatedAt);
+	const retained = new Set(sorted.slice(0, MAX_RETAINED_PULLS).map(([key]) => key));
+	for (const [key, pull] of sorted) {
+		if (pull === keepPull || retained.has(key)) continue;
+		job.pulls.delete(key);
+		void unlinkWithRetry(pull.path);
 	}
 }
 
 async function runSession(id: string, seq: number) {
 	const job = jobs.get(id);
-	if (!job?.session || job.session.seq !== seq) return;
-	const session = job.session;
+	const pull = [...(job?.pulls.values() ?? [])].find((candidate) => candidate.seq === seq);
+	if (!job || !pull || pull.state !== 'pulling') return;
 	const input = job.input;
-	const remainingSeconds = Math.max(1, durationSeconds(input) - session.atSeconds);
+	const remainingSeconds = Math.max(1, durationSeconds(input) - pull.atSeconds);
 	let acquiredSlot = false;
 	try {
 		await acquireSlot();
 		acquiredSlot = true;
 		const current = jobs.get(id);
-		if (!current?.session || current.session.seq !== seq || session.abort.signal.aborted) return;
+		const currentPull = [...(current?.pulls.values() ?? [])].find((candidate) => candidate.seq === seq);
+		if (!current || currentPull !== pull || pull.state !== 'pulling' || pull.abort.signal.aborted) return;
 
 		await mkdir(env.video.clipDir, { recursive: true });
-		await unlink(session.partialPath).catch(() => undefined);
+		await unlink(pull.path).catch(() => undefined);
 		await ensureFfmpegTools();
 
-		const start = new Date(input.start.getTime() + session.atSeconds * 1000);
+		const start = new Date(input.start.getTime() + pull.atSeconds * 1000);
 		const playback = buildPlaybackUrl({
 			...input.dvr,
 			channel: input.channel,
@@ -156,46 +199,50 @@ async function runSession(id: string, seq: number) {
 			endDvr: formatDvrTimestamp(input.end, env.video.timeZone)
 		});
 
+		const secrets = [playback.url, input.dvr.password, encodeURIComponent(input.dvr.password)];
 		let inputArgs: string[] | undefined;
-		if (session.requestedRate > 1) {
-			session.scaled =
-				(await openScaledPlayback({
-					url: playback.url,
-					redactedUrl: playback.redacted,
-					username: input.dvr.username,
-					password: input.dvr.password,
-					rate: session.requestedRate,
-					sdpDir: env.video.clipDir
-				})) ?? undefined;
-			if (session.scaled) {
-				inputArgs = session.scaled.inputArgs;
-				session.actualRate = session.scaled.actualRate;
-			} else {
-				session.actualRate = 1;
+		pull.actualRate = 1;
+		pull.updatedAt = Date.now();
+		if (pull.requestedRate > 1) {
+			const accepted = await probeScaleSupport({
+				url: playback.url,
+				redactedUrl: playback.redacted,
+				username: input.dvr.username,
+				password: input.dvr.password,
+				rate: pull.requestedRate
+			});
+			if (accepted && !pull.abort.signal.aborted) {
+				pull.proxy = await startScaledRtspProxy({ url: playback.url, rate: accepted });
+				inputArgs = ['-rtsp_transport', 'tcp', '-i', pull.proxy.url];
+				pull.actualRate = accepted;
+				pull.updatedAt = Date.now();
+				secrets.push(pull.proxy.url);
 			}
 		}
 
 		updateJob(id, {
 			status: 'pulling',
 			message:
-				session.actualRate > 1
-					? `Buscando gravacao no DVR em ${session.actualRate}x.`
-					: session.requestedRate > 1
+				pull.actualRate > 1
+					? `Buscando gravacao no DVR em ${pull.actualRate}x.`
+					: pull.requestedRate > 1
 						? 'DVR nao aceitou velocidade alta; buscando em 1x.'
 						: 'Buscando gravacao no DVR.',
-			actualRate: session.actualRate
+			actualRate: pull.actualRate
 		});
 
 		await runFfmpegDownload({
 			url: playback.url,
 			redactedUrl: playback.redacted,
-			secrets: [playback.url, input.dvr.password, encodeURIComponent(input.dvr.password)],
+			secrets,
 			durationSeconds: remainingSeconds,
-			outputPath: session.partialPath,
+			rate: pull.actualRate,
+			outputPath: pull.path,
 			inputArgs,
-			signal: session.abort.signal,
+			signal: pull.abort.signal,
 			onProgress: (progress) => {
-				const positionSeconds = Math.min(durationSeconds(input), session.atSeconds + (remainingSeconds * progress) / 100);
+				const positionSeconds = Math.min(durationSeconds(input), pull.atSeconds + (remainingSeconds * progress) / 100);
+				pull.updatedAt = Date.now();
 				updateJob(id, {
 					positionSeconds,
 					progress: Math.max(1, Math.min(100, Math.round((positionSeconds / durationSeconds(input)) * 100))),
@@ -204,18 +251,24 @@ async function runSession(id: string, seq: number) {
 			}
 		});
 
-		if (!session.abort.signal.aborted && jobs.get(id)?.session?.seq === seq) {
+		const completedJob = jobs.get(id);
+		if (!pull.abort.signal.aborted && completedJob?.pulls.get(pullKey(pull.atSeconds, pull.requestedRate)) === pull) {
+			pull.state = 'complete';
+			pull.updatedAt = Date.now();
 			updateJob(id, {
 				status: 'idle',
 				message: 'Trecho carregado ate o fim.',
 				positionSeconds: durationSeconds(input),
 				progress: 100
 			});
-			jobs.get(id)!.session = undefined;
+			prunePulls(completedJob, pull);
 		}
 	} catch (error) {
-		if (session.abort.signal.aborted) return;
+		if (pull.abort.signal.aborted) return;
 		const message = error instanceof Error ? error.message : 'Falha ao gerar clipe.';
+		pull.state = 'failed';
+		pull.error = message;
+		pull.updatedAt = Date.now();
 		updateJob(id, {
 			status: 'failed',
 			message: 'Falha ao carregar trecho do clipe.',
@@ -223,7 +276,8 @@ async function runSession(id: string, seq: number) {
 			progress: 0
 		});
 	} finally {
-		session.scaled?.close();
+		pull.proxy?.close();
+		pull.proxy = undefined;
 		if (acquiredSlot) releaseSlot();
 		scheduleCleanup(id);
 	}
@@ -253,7 +307,7 @@ export function createClipJob(input: CreateClipJobInput): ClipJob {
 		updatedAt: now.toISOString(),
 		expiresAt: expiresAt.toISOString(),
 		input,
-		partialPaths: new Set()
+		pulls: new Map()
 	};
 	jobs.set(id, job);
 	scheduleCleanup(id);
@@ -264,12 +318,17 @@ export function getClipJob(id: string): InternalClipJob | undefined {
 	return jobs.get(id);
 }
 
-export async function setClipPosition(id: string, atSeconds: number, rate: ClipRate): Promise<InternalClipJob | undefined> {
+export function getClipPull(id: string, seq: number): ClipPull | undefined {
+	const job = jobs.get(id);
+	return [...(job?.pulls.values() ?? [])].find((pull) => pull.seq === seq);
+}
+
+export async function setClipPosition(id: string, atSeconds: number, rate: ClipRate): Promise<{ job: InternalClipJob; pull?: ClipPull } | undefined> {
 	const job = jobs.get(id);
 	if (!job) return undefined;
 	const at = clampPosition(job.input, atSeconds);
 	if (at >= job.durationSeconds) {
-		stopSession(job);
+		stopPulls(job);
 		updateJob(id, {
 			status: 'idle',
 			message: 'Fim do recorte.',
@@ -279,25 +338,48 @@ export async function setClipPosition(id: string, atSeconds: number, rate: ClipR
 			actualRate: rate,
 			partialPath: undefined
 		});
-		return jobs.get(id);
+		const updated = jobs.get(id);
+		return updated ? { job: updated } : undefined;
 	}
 
-	if (job.session && job.session.requestedRate === rate && Math.abs(job.session.atSeconds - at) < 1) return job;
+	const key = pullKey(at, rate);
+	const existingPull = job.pulls.get(key);
+	if (existingPull && existingPull.state !== 'failed') {
+		updateJob(id, {
+			status: existingPull.state === 'pulling' ? 'pulling' : 'idle',
+			message: existingPull.state === 'pulling' ? job.message : 'Trecho carregado ate o fim.',
+			error: undefined,
+			positionSeconds: existingPull.state === 'complete' ? job.durationSeconds : at,
+			rate,
+			actualRate: existingPull.actualRate,
+			streamSeq: existingPull.seq,
+			partialPath: existingPull.path
+		});
+		const updated = jobs.get(id);
+		return updated ? { job: updated, pull: existingPull } : undefined;
+	}
+	if (existingPull) {
+		job.pulls.delete(key);
+		void unlinkWithRetry(existingPull.path);
+	}
 
-	stopSession(job);
+	stopPulls(job);
 	const seq = job.streamSeq + 1;
 	const partialPath = join(env.video.clipDir, `${id}.${seq}.partial.mp4`);
-	job.partialPaths.add(partialPath);
-	deleteOldPartials(job, partialPath);
-	const session: ActiveSession = {
+	const now = Date.now();
+	const pull: ClipPull = {
 		seq,
 		atSeconds: at,
 		requestedRate: rate,
 		actualRate: rate,
-		partialPath,
+		path: partialPath,
+		state: 'pulling',
+		createdAt: now,
+		updatedAt: now,
 		abort: new AbortController()
 	};
-	job.session = session;
+	job.pulls.set(key, pull);
+	prunePulls(job, pull);
 	updateJob(id, {
 		status: 'pulling',
 		message: 'Aguardando o DVR iniciar o playback.',
@@ -310,5 +392,6 @@ export async function setClipPosition(id: string, atSeconds: number, rate: ClipR
 		partialPath
 	});
 	void runSession(id, seq);
-	return jobs.get(id);
+	const updated = jobs.get(id);
+	return updated ? { job: updated, pull } : undefined;
 }
