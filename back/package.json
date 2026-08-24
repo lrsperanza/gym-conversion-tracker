@@ -11,6 +11,7 @@
 		"db:migrate": "bun src/db/migrate.ts",
 		"db:seed": "bun src/db/seed.ts",
 		"bootstrap:admin": "bun src/scripts/bootstrap-admin.ts",
+		"clip:extract": "bun src/scripts/extract-clip.ts",
 		"desktop:publish": "bun src/scripts/publish-desktop.ts"
 	},
 	"dependencies": {

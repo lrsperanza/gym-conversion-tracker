@@ -2,6 +2,7 @@
 	import { api, dateTime, money } from '$lib/api/client';
 	import { errorMessage, eventToneClass, eventTypeLabel, isScheduledEventType } from '$lib/helpers';
 	import type { LeadEvent } from '$lib/types';
+	import ClipReviewModal from './ClipReviewModal.svelte';
 
 	let {
 		leadId,
@@ -17,6 +18,7 @@
 	const GENERATED_DESCRIPTION: string[] = ['SALE', 'TOUR_RECEPTIONIST', 'TOUR_PROFESSOR'];
 
 	let open = $state(false);
+	let reviewEvent = $state<LeadEvent | null>(null);
 
 	/** Muda quando o lead troca ou quando um evento novo é registrado, forçando recarga. */
 	let requestKey = $derived(`${leadId}:${count ?? ''}`);
@@ -87,9 +89,18 @@
 									</p>
 								{/if}
 								{#if event.type === 'SALE' && event.label_snapshot}
-									<p class="text-xs font-bold text-emerald-800">
-										{event.label_snapshot} · {money(event.amount_cents)}
-									</p>
+									<div class="flex flex-wrap items-center gap-2">
+										<p class="text-xs font-bold text-emerald-800">
+											{event.label_snapshot} · {money(event.amount_cents)}
+										</p>
+										<button
+											type="button"
+											class="rounded-full border border-emerald-200 px-2.5 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50"
+											onclick={() => (reviewEvent = event)}
+										>
+											Revisar vídeo
+										</button>
+									</div>
 								{/if}
 								{#if event.loss_reason_label}
 									<p class="text-xs font-bold text-red-800">Motivo: {event.loss_reason_label}</p>
@@ -113,4 +124,6 @@
 			{/await}
 		{/key}
 	{/if}
+
+	<ClipReviewModal event={reviewEvent} onClose={() => (reviewEvent = null)} />
 </div>

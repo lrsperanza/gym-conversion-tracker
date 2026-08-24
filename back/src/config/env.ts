@@ -22,6 +22,12 @@ const rawEnvSchema = z.object({
 	AWS_SMTP_FROM_NAME: z.string().default('Skyfit'),
 	EVO_CRED_KEY: z.string().default(''),
 	EVO_TICKET_KEY: z.string().default(''),
+	CAMERA_CRED_KEY: z.string().default(''),
+	CAMERA_CLIP_DIR: z.string().default('./clips'),
+	CAMERA_CLIP_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+	CAMERA_CLIP_MAX_MINUTES: z.coerce.number().int().positive().default(15),
+	CAMERA_MAX_CONCURRENT: z.coerce.number().int().positive().default(2),
+	GYM_TIMEZONE: z.string().default('America/Sao_Paulo'),
 	AZURE_STORAGE_ACCOUNT_NAME: z.string().default(''),
 	AZURE_STORAGE_ACCOUNT_KEY: z.string().default(''),
 	DESKTOP_BLOB_CONTAINER: z.string().default('personal'),
@@ -55,6 +61,14 @@ export const env = {
 	evo: {
 		credentialKey: parsed.EVO_CRED_KEY,
 		ticketKey: parsed.EVO_TICKET_KEY || parsed.EVO_CRED_KEY
+	},
+	video: {
+		credentialKey: parsed.CAMERA_CRED_KEY || parsed.EVO_CRED_KEY,
+		clipDir: parsed.CAMERA_CLIP_DIR,
+		clipTtlMinutes: parsed.CAMERA_CLIP_TTL_MINUTES,
+		clipMaxMinutes: parsed.CAMERA_CLIP_MAX_MINUTES,
+		maxConcurrent: parsed.CAMERA_MAX_CONCURRENT,
+		timeZone: parsed.GYM_TIMEZONE
 	},
 	azure: {
 		accountName: parsed.AZURE_STORAGE_ACCOUNT_NAME,

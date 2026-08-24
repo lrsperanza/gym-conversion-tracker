@@ -10,6 +10,7 @@ import {
 	uniqueIndex,
 	uuid
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { DB_SCHEMA } from '../config/env';
 
 export const gym = pgSchema(DB_SCHEMA);
@@ -78,6 +79,51 @@ export const academies = gym.table(
 		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 	},
 	(table) => [uniqueIndex('academies_name_idx').on(table.name)]
+);
+
+export const academyDvrs = gym.table(
+	'academy_dvrs',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		academyId: uuid('academy_id')
+			.notNull()
+			.references(() => academies.id),
+		name: text('name').notNull(),
+		host: text('host').notNull(),
+		rtspPort: integer('rtsp_port').notNull().default(554),
+		httpPort: integer('http_port').notNull().default(80),
+		username: text('username').notNull(),
+		passwordEncrypted: text('password_encrypted').notNull(),
+		active: boolean('active').notNull().default(true),
+		createdAt: now,
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(table) => [
+		index('academy_dvrs_academy_idx').on(table.academyId),
+		uniqueIndex('academy_dvrs_academy_name_idx').on(table.academyId, table.name).where(sql`${table.active} = true`)
+	]
+);
+
+export const academyCameras = gym.table(
+	'academy_cameras',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		dvrId: uuid('dvr_id')
+			.notNull()
+			.references(() => academyDvrs.id),
+		name: text('name').notNull(),
+		channel: integer('channel').notNull(),
+		isDefault: boolean('is_default').notNull().default(false),
+		active: boolean('active').notNull().default(true),
+		sortOrder: integer('sort_order').notNull().default(0),
+		createdAt: now,
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(table) => [
+		index('academy_cameras_dvr_idx').on(table.dvrId),
+		uniqueIndex('academy_cameras_dvr_channel_idx').on(table.dvrId, table.channel).where(sql`${table.active} = true`),
+		uniqueIndex('academy_cameras_dvr_default_idx').on(table.dvrId).where(sql`${table.isDefault} = true`)
+	]
 );
 
 export const users = gym.table(

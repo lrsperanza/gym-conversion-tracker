@@ -508,6 +508,7 @@ attendanceRoutes.get('/leads/:id/events', async (c) => {
 		SELECT
 			e."id",
 			e."attendance_id",
+			a."academy_id",
 			e."type",
 			e."scheduled_for",
 			e."description",

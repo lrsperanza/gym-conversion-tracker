@@ -44,6 +44,7 @@ export type AttendanceEventType =
 export type LeadEvent = {
 	id: string;
 	attendance_id: string;
+	academy_id: string;
 	type: AttendanceEventType;
 	scheduled_for?: string | null;
 	description?: string | null;
@@ -154,6 +155,70 @@ export type EvoJobStatus = {
 	screenshot?: string;
 	createdAt: string;
 	updatedAt: string;
+};
+
+export type AcademyCamera = {
+	id: string;
+	academyId: string;
+	dvrId: string;
+	dvrName: string;
+	name: string;
+	channel: number;
+	isDefault: boolean;
+	sortOrder: number;
+};
+
+export type AdminCamera = {
+	id: string;
+	dvrId: string;
+	academyId: string;
+	name: string;
+	channel: number;
+	isDefault: boolean;
+	active: boolean;
+	sortOrder: number;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type AcademyDvr = {
+	id: string;
+	academyId: string;
+	name: string;
+	host: string;
+	rtspPort: number;
+	httpPort: number;
+	username: string;
+	active: boolean;
+	hasPassword: boolean;
+	createdAt: string;
+	updatedAt: string;
+	cameras?: AdminCamera[];
+};
+
+export type DvrTestResult = {
+	ok: boolean;
+	rtspReachable: boolean;
+	httpReachable: boolean;
+	credentialStatus: 'ok' | 'auth_failed' | 'unsupported' | 'unreachable';
+};
+
+export type ClipJob = {
+	id: string;
+	attendanceId: string;
+	cameraId: string;
+	cameraName: string;
+	status: 'queued' | 'running' | 'completed' | 'failed';
+	message: string;
+	progress: number;
+	error?: string;
+	sizeBytes?: number;
+	durationSeconds?: number | null;
+	start: string;
+	end: string;
+	createdAt: string;
+	updatedAt: string;
+	expiresAt: string;
 };
 
 export type DashboardSummary = {

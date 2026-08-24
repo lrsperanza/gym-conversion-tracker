@@ -6,7 +6,17 @@
 	import Notice from '$lib/components/Notice.svelte';
 	import { asCents, errorMessage, roleLabel } from '$lib/helpers';
 	import { getSessionContext } from '$lib/session';
-	import type { Academy, LossReason, OutcomeType, Professor, Role, User } from '$lib/types';
+	import type {
+		Academy,
+		AcademyDvr,
+		AdminCamera,
+		DvrTestResult,
+		LossReason,
+		OutcomeType,
+		Professor,
+		Role,
+		User
+	} from '$lib/types';
 	import { onMount } from 'svelte';
 
 	type AdminUser = User & { active?: boolean; whatsapp_e164?: string | null };
@@ -72,6 +82,25 @@
 	});
 	let activeAcademies = $derived(academies.filter((academy) => academy.active));
 
+	let cameraAcademyId = $state('');
+	let dvrs = $state.raw<AcademyDvr[]>([]);
+	let dvrForm = $state({
+		id: '',
+		name: '',
+		host: '',
+		rtspPort: 554,
+		httpPort: 80,
+		username: '',
+		password: '',
+		active: true
+	});
+	let dvrTestMessages = $state<Record<string, string>>({});
+	let dvrTestOk = $state<Record<string, boolean>>({});
+	let dvrTesting = $state<Record<string, boolean>>({});
+	let cameraDrafts = $state<Record<string, { name: string; channel: number; isDefault: boolean }>>(
+		{}
+	);
+
 	onMount(() => {
 		if (!session.user) return;
 		if (!canAccessAdmin(session.user)) {
@@ -112,6 +141,8 @@
 			);
 			if (!professorForm.academyId && activeAcademies[0])
 				professorForm.academyId = activeAcademies[0].id;
+			if (!cameraAcademyId && activeAcademies[0]) cameraAcademyId = activeAcademies[0].id;
+			if (cameraAcademyId) await loadDvrs();
 		} catch (error) {
 			adminMessage = errorMessage(error);
 		} finally {
@@ -254,6 +285,204 @@
 			});
 			adminMessage = 'Status do professor atualizado.';
 			await loadAdminData();
+		} catch (error) {
+			adminMessage = errorMessage(error);
+		}
+	}
+
+	async function loadDvrs() {
+		if (!cameraAcademyId) {
+			dvrs = [];
+			return;
+		}
+		const data = await api<{ dvrs: AcademyDvr[] }>(`/api/admin/academies/${cameraAcademyId}/dvrs`);
+		dvrs = data.dvrs;
+		cameraDrafts = Object.fromEntries(
+			data.dvrs.map((dvr) => [
+				dvr.id,
+				cameraDrafts[dvr.id] ?? { name: '', channel: 1, isDefault: false }
+			])
+		);
+	}
+
+	async function changeCameraAcademy() {
+		adminMessage = '';
+		dvrTestMessages = {};
+		dvrTestOk = {};
+		resetDvrForm();
+		try {
+			await loadDvrs();
+		} catch (error) {
+			adminMessage = errorMessage(error);
+		}
+	}
+
+	function resetDvrForm() {
+		dvrForm = {
+			id: '',
+			name: '',
+			host: '',
+			rtspPort: 554,
+			httpPort: 80,
+			username: '',
+			password: '',
+			active: true
+		};
+	}
+
+	function editDvr(dvr: AcademyDvr) {
+		dvrForm = {
+			id: dvr.id,
+			name: dvr.name,
+			host: dvr.host,
+			rtspPort: dvr.rtspPort,
+			httpPort: dvr.httpPort,
+			username: dvr.username,
+			password: '',
+			active: dvr.active
+		};
+	}
+
+	async function saveDvr(event: SubmitEvent) {
+		event.preventDefault();
+		if (!cameraAcademyId) return;
+		adminMessage = '';
+		try {
+			const payload: {
+				name: string;
+				host: string;
+				rtspPort: number;
+				httpPort: number;
+				username: string;
+				active: boolean;
+				password?: string;
+			} = {
+				name: dvrForm.name,
+				host: dvrForm.host,
+				rtspPort: dvrForm.rtspPort,
+				httpPort: dvrForm.httpPort,
+				username: dvrForm.username,
+				active: dvrForm.active
+			};
+			if (dvrForm.id) {
+				if (dvrForm.password) payload.password = dvrForm.password;
+				await api<{ dvr: AcademyDvr }>(`/api/admin/dvrs/${dvrForm.id}`, {
+					method: 'PATCH',
+					body: JSON.stringify(payload)
+				});
+				adminMessage = 'DVR atualizado.';
+			} else {
+				payload.password = dvrForm.password;
+				await api<{ dvr: AcademyDvr }>(`/api/admin/academies/${cameraAcademyId}/dvrs`, {
+					method: 'POST',
+					body: JSON.stringify(payload)
+				});
+				adminMessage = 'DVR criado.';
+			}
+			resetDvrForm();
+			await loadDvrs();
+		} catch (error) {
+			adminMessage = errorMessage(error);
+		}
+	}
+
+	async function toggleDvr(dvr: AcademyDvr) {
+		adminMessage = '';
+		try {
+			if (dvr.active) {
+				await api<{ ok: boolean }>(`/api/admin/dvrs/${dvr.id}`, { method: 'DELETE' });
+				adminMessage = 'DVR inativado.';
+			} else {
+				await api<{ dvr: AcademyDvr }>(`/api/admin/dvrs/${dvr.id}`, {
+					method: 'PATCH',
+					body: JSON.stringify({ active: true })
+				});
+				adminMessage = 'DVR reativado.';
+			}
+			await loadDvrs();
+		} catch (error) {
+			adminMessage = errorMessage(error);
+		}
+	}
+
+	function dvrTestMessage(result: DvrTestResult) {
+		if (result.ok) return 'RTSP ok · credenciais ok';
+		const problems: string[] = [];
+		if (!result.rtspReachable) problems.push('RTSP inacessível');
+		if (result.credentialStatus === 'auth_failed') problems.push('credenciais recusadas');
+		else if (result.credentialStatus === 'unreachable')
+			problems.push('DVR inacessível (verifique o Tailscale)');
+		else if (result.credentialStatus === 'unsupported') problems.push('API HTTP não suportada');
+		return problems.length ? problems.join(' · ') : 'Falha no teste do DVR.';
+	}
+
+	async function testDvr(dvr: AcademyDvr) {
+		adminMessage = '';
+		dvrTesting[dvr.id] = true;
+		try {
+			const data = await api<{ result: DvrTestResult }>(`/api/admin/dvrs/${dvr.id}/test`, {
+				method: 'POST'
+			});
+			dvrTestOk[dvr.id] = data.result.ok;
+			dvrTestMessages[dvr.id] = dvrTestMessage(data.result);
+		} catch (error) {
+			dvrTestOk[dvr.id] = false;
+			dvrTestMessages[dvr.id] = errorMessage(error);
+		} finally {
+			dvrTesting[dvr.id] = false;
+		}
+	}
+
+	async function setCameraDefault(camera: AdminCamera) {
+		adminMessage = '';
+		try {
+			await api<{ camera: AdminCamera }>(`/api/admin/cameras/${camera.id}`, {
+				method: 'PATCH',
+				body: JSON.stringify({ isDefault: true })
+			});
+			adminMessage = 'Câmera padrão atualizada.';
+			await loadDvrs();
+		} catch (error) {
+			adminMessage = errorMessage(error);
+		}
+	}
+
+	async function toggleCamera(camera: AdminCamera) {
+		adminMessage = '';
+		try {
+			if (camera.active) {
+				await api<{ ok: boolean }>(`/api/admin/cameras/${camera.id}`, { method: 'DELETE' });
+				adminMessage = 'Câmera inativada.';
+			} else {
+				await api<{ camera: AdminCamera }>(`/api/admin/cameras/${camera.id}`, {
+					method: 'PATCH',
+					body: JSON.stringify({ active: true })
+				});
+				adminMessage = 'Câmera reativada.';
+			}
+			await loadDvrs();
+		} catch (error) {
+			adminMessage = errorMessage(error);
+		}
+	}
+
+	async function createCamera(event: SubmitEvent, dvr: AcademyDvr) {
+		event.preventDefault();
+		const draft = cameraDrafts[dvr.id];
+		if (!draft) return;
+		adminMessage = '';
+		try {
+			await api<{ camera: AdminCamera }>(`/api/admin/dvrs/${dvr.id}/cameras`, {
+				method: 'POST',
+				body: JSON.stringify({
+					name: draft.name,
+					channel: draft.channel,
+					isDefault: draft.isDefault
+				})
+			});
+			adminMessage = 'Câmera adicionada.';
+			cameraDrafts[dvr.id] = { name: '', channel: 1, isDefault: false };
+			await loadDvrs();
 		} catch (error) {
 			adminMessage = errorMessage(error);
 		}
@@ -630,6 +859,206 @@
 						</div>
 					{/each}
 				</div>
+			</section>
+
+			<section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+				<h3 class="text-lg font-bold text-slate-950">Câmeras e DVRs</h3>
+				<p class="mt-1 text-sm text-slate-600">
+					Configura o DVR Intelbras de cada academia, usado para revisar as gravações das vendas.
+				</p>
+				<label class="mt-4 block text-sm font-medium text-slate-700">
+					Academia
+					<select
+						class="mt-1 w-full rounded-2xl border-slate-300"
+						bind:value={cameraAcademyId}
+						onchange={() => void changeCameraAcademy()}
+					>
+						<option value="" disabled>Selecione</option>
+						{#each academies as academy (academy.id)}
+							<option value={academy.id}>{academy.name}</option>
+						{/each}
+					</select>
+				</label>
+				{#if cameraAcademyId}
+					<form class="mt-4 grid gap-3 sm:grid-cols-2" onsubmit={saveDvr}>
+						<label class="text-sm font-medium text-slate-700"
+							>Nome<input
+								class="mt-1 w-full rounded-2xl border-slate-300"
+								bind:value={dvrForm.name}
+								required
+							/></label
+						>
+						<label class="text-sm font-medium text-slate-700"
+							>Host<input
+								class="mt-1 w-full rounded-2xl border-slate-300"
+								placeholder="192.168.1.191 ou 100.x.y.z"
+								bind:value={dvrForm.host}
+								required
+							/></label
+						>
+						<label class="text-sm font-medium text-slate-700"
+							>Porta RTSP<input
+								class="mt-1 w-full rounded-2xl border-slate-300"
+								type="number"
+								min="1"
+								max="65535"
+								bind:value={dvrForm.rtspPort}
+								required
+							/></label
+						>
+						<label class="text-sm font-medium text-slate-700"
+							>Porta HTTP<input
+								class="mt-1 w-full rounded-2xl border-slate-300"
+								type="number"
+								min="1"
+								max="65535"
+								bind:value={dvrForm.httpPort}
+								required
+							/></label
+						>
+						<label class="text-sm font-medium text-slate-700"
+							>Usuário<input
+								class="mt-1 w-full rounded-2xl border-slate-300"
+								bind:value={dvrForm.username}
+								required
+							/></label
+						>
+						<label class="text-sm font-medium text-slate-700"
+							>Senha<input
+								class="mt-1 w-full rounded-2xl border-slate-300"
+								type="password"
+								placeholder={dvrForm.id ? 'deixe em branco para manter' : ''}
+								bind:value={dvrForm.password}
+								required={!dvrForm.id}
+							/></label
+						>
+						<label class="flex items-center gap-2 text-sm font-medium text-slate-700"
+							><input
+								class="rounded border-slate-300"
+								type="checkbox"
+								bind:checked={dvrForm.active}
+							/>Ativo</label
+						>
+						<div class="flex gap-2 sm:col-span-2">
+							<button class="rounded-2xl bg-slate-950 px-4 py-3 font-bold text-white"
+								>{dvrForm.id ? 'Atualizar' : 'Criar'} DVR</button
+							>
+							{#if dvrForm.id}
+								<button
+									type="button"
+									class="rounded-2xl border border-slate-300 px-4 py-3 font-semibold text-slate-700 hover:bg-slate-50"
+									onclick={resetDvrForm}>Cancelar edição</button
+								>
+							{/if}
+						</div>
+					</form>
+					<div class="mt-4 space-y-3">
+						{#each dvrs as dvr (dvr.id)}
+							{@const cameraDraft = cameraDrafts[dvr.id]}
+							<div class="rounded-2xl border border-slate-200 p-3">
+								<div class="flex items-center justify-between gap-3">
+									<p class="text-sm">
+										<strong>{dvr.name}</strong>
+										<span
+											class={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${dvr.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}
+											>{dvr.active ? 'Ativo' : 'Inativo'}</span
+										><br />
+										{dvr.host}:{dvr.rtspPort} · usuário {dvr.username}
+									</p>
+									<div class="flex gap-2">
+										<button
+											type="button"
+											class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold disabled:opacity-40"
+											onclick={() => testDvr(dvr)}
+											disabled={dvrTesting[dvr.id]}
+											>{dvrTesting[dvr.id] ? 'Testando...' : 'Testar'}</button
+										>
+										<button
+											type="button"
+											class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold"
+											onclick={() => editDvr(dvr)}>Editar</button
+										>
+										<button
+											type="button"
+											class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold"
+											onclick={() => toggleDvr(dvr)}>{dvr.active ? 'Inativar' : 'Ativar'}</button
+										>
+									</div>
+								</div>
+								{#if dvrTestMessages[dvr.id]}
+									<p
+										class={`mt-2 text-xs ${dvrTestOk[dvr.id] ? 'text-emerald-600' : 'text-red-600'}`}
+									>
+										{dvrTestMessages[dvr.id]}
+									</p>
+								{/if}
+								<div class="mt-3 space-y-2 border-t border-slate-100 pt-3">
+									{#each dvr.cameras ?? [] as camera (camera.id)}
+										<div
+											class={`flex items-center justify-between gap-3 rounded-xl border border-slate-200 p-2 ${camera.active ? '' : 'opacity-60'}`}
+										>
+											<p class="text-sm">
+												<strong>{camera.name}</strong> · canal {camera.channel}
+												{#if camera.isDefault}
+													<span
+														class="ml-1 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-700"
+														>padrão</span
+													>
+												{/if}
+												{#if !camera.active}
+													<span class="ml-1 text-xs text-slate-500">Inativa</span>
+												{/if}
+											</p>
+											<div class="flex gap-2">
+												{#if camera.active && !camera.isDefault}
+													<button
+														type="button"
+														class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold"
+														onclick={() => setCameraDefault(camera)}>Tornar padrão</button
+													>
+												{/if}
+												<button
+													type="button"
+													class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold"
+													onclick={() => toggleCamera(camera)}
+													>{camera.active ? 'Inativar' : 'Ativar'}</button
+												>
+											</div>
+										</div>
+									{/each}
+									{#if cameraDraft}
+										<form
+											class="grid gap-2 rounded-xl bg-slate-50 p-3 sm:grid-cols-[1fr_7rem_auto_auto]"
+											onsubmit={(event) => createCamera(event, dvr)}
+										>
+											<input
+												class="rounded-xl border-slate-300"
+												placeholder="Nome da câmera"
+												bind:value={cameraDraft.name}
+												required
+											/>
+											<input
+												class="rounded-xl border-slate-300"
+												type="number"
+												min="1"
+												placeholder="Canal"
+												bind:value={cameraDraft.channel}
+												required
+											/>
+											<label class="flex items-center gap-2 text-sm font-medium"
+												><input type="checkbox" bind:checked={cameraDraft.isDefault} /> Padrão</label
+											>
+											<button
+												class="rounded-xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white"
+												>Adicionar</button
+											>
+										</form>
+									{/if}
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
 			</section>
 
 			<section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
