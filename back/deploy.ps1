@@ -101,7 +101,7 @@ try {
         "--allow-unauthenticated",
         "--memory=512Mi",
         "--cpu=1",
-        "--timeout=300",
+        "--timeout=1800",
         "--concurrency=80",
         "--port=8080",
         "--update-env-vars=CORS_ORIGIN=$CORS_ORIGIN,APP_URL=$APP_URL",

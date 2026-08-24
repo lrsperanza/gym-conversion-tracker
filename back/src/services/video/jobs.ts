@@ -1,12 +1,12 @@
-import { mkdir, rename, unlink } from 'node:fs/promises';
+import { mkdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { env } from '../../config/env';
-import { formatDvrTimestamp, formatFilenameTimestamp } from './datetime';
-import { ensureFfmpegTools, probeFile, runFfmpegDownload } from './ffmpeg';
+import { formatDvrTimestamp } from './datetime';
+import { ensureFfmpegTools, runFfmpegDownload } from './ffmpeg';
 import { buildPlaybackUrl, type DvrCredentials } from './intelbras';
-import { VideoExtractorError } from './errors';
+import { openScaledPlayback, type ClipRate, type ScaledPlaybackSession } from './rtspScale';
 
-export type ClipJobStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type ClipJobStatus = 'idle' | 'pulling' | 'failed';
 
 export type ClipJob = {
 	id: string;
@@ -18,10 +18,12 @@ export type ClipJob = {
 	message: string;
 	progress: number;
 	error?: string;
-	filePath?: string;
-	fileName?: string;
-	sizeBytes?: number;
-	durationSeconds?: number | null;
+	durationSeconds: number;
+	positionSeconds: number;
+	rate: ClipRate;
+	actualRate: ClipRate;
+	streamSeq: number;
+	partialPath?: string;
 	start: string;
 	end: string;
 	createdAt: string;
@@ -40,10 +42,32 @@ export type CreateClipJobInput = {
 	dvr: DvrCredentials;
 };
 
-const jobs = new Map<string, ClipJob>();
+type ActiveSession = {
+	seq: number;
+	atSeconds: number;
+	requestedRate: ClipRate;
+	actualRate: ClipRate;
+	partialPath: string;
+	abort: AbortController;
+	scaled?: ScaledPlaybackSession;
+};
+
+type InternalClipJob = ClipJob & {
+	input: CreateClipJobInput;
+	session?: ActiveSession;
+	partialPaths: Set<string>;
+};
+
+const jobs = new Map<string, InternalClipJob>();
 const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let activeJobs = 0;
 const waiters: Array<() => void> = [];
+
+export const CLIP_RATES: ClipRate[] = [1, 2, 4, 8];
+
+export function isClipRate(value: number): value is ClipRate {
+	return CLIP_RATES.includes(value as ClipRate);
+}
 
 function updateJob(id: string, patch: Partial<ClipJob>) {
 	const current = jobs.get(id);
@@ -71,86 +95,136 @@ function scheduleCleanup(id: string) {
 	if (existing) clearTimeout(existing);
 	const timer = setTimeout(() => {
 		const job = jobs.get(id);
+		if (job) stopSession(job);
 		jobs.delete(id);
 		cleanupTimers.delete(id);
-		if (job?.filePath) {
-			void unlink(job.filePath).catch(() => undefined);
+		if (job) {
+			for (const path of job.partialPaths) {
+				void unlink(path).catch(() => undefined);
+			}
 		}
 	}, env.video.clipTtlMinutes * 60 * 1000);
 	cleanupTimers.set(id, timer);
 }
 
-function safeSegment(value: string) {
-	return value
-		.normalize('NFD')
-		.replace(/[\u0300-\u036f]/g, '')
-		.replace(/[^a-z0-9_-]+/gi, '-')
-		.replace(/^-+|-+$/g, '')
-		.slice(0, 48)
-		.toLowerCase();
+function durationSeconds(input: CreateClipJobInput) {
+	return Math.ceil((input.end.getTime() - input.start.getTime()) / 1000);
 }
 
-async function runJob(id: string, input: CreateClipJobInput) {
-	await acquireSlot();
-	const partialPath = join(env.video.clipDir, `${id}.partial.mp4`);
+function clampPosition(input: CreateClipJobInput, atSeconds: number) {
+	const duration = durationSeconds(input);
+	if (!Number.isFinite(atSeconds)) return 0;
+	return Math.max(0, Math.min(duration, Math.floor(atSeconds)));
+}
+
+function stopSession(job: InternalClipJob) {
+	job.session?.abort.abort();
+	job.session?.scaled?.close();
+	job.session = undefined;
+}
+
+function deleteOldPartials(job: InternalClipJob, keepPath: string) {
+	for (const path of [...job.partialPaths]) {
+		if (path === keepPath) continue;
+		job.partialPaths.delete(path);
+		void unlink(path).catch(() => undefined);
+	}
+}
+
+async function runSession(id: string, seq: number) {
+	const job = jobs.get(id);
+	if (!job?.session || job.session.seq !== seq) return;
+	const session = job.session;
+	const input = job.input;
+	const remainingSeconds = Math.max(1, durationSeconds(input) - session.atSeconds);
+	let acquiredSlot = false;
 	try {
-		updateJob(id, { status: 'running', message: 'Gerando clipe a partir da gravacao do DVR.', progress: 1 });
+		await acquireSlot();
+		acquiredSlot = true;
+		const current = jobs.get(id);
+		if (!current?.session || current.session.seq !== seq || session.abort.signal.aborted) return;
+
 		await mkdir(env.video.clipDir, { recursive: true });
+		await unlink(session.partialPath).catch(() => undefined);
 		await ensureFfmpegTools();
 
-		const startDvr = formatDvrTimestamp(input.start, env.video.timeZone);
-		const endDvr = formatDvrTimestamp(input.end, env.video.timeZone);
-		const durationSeconds = Math.ceil((input.end.getTime() - input.start.getTime()) / 1000);
+		const start = new Date(input.start.getTime() + session.atSeconds * 1000);
 		const playback = buildPlaybackUrl({
 			...input.dvr,
 			channel: input.channel,
-			startDvr,
-			endDvr
+			startDvr: formatDvrTimestamp(start, env.video.timeZone),
+			endDvr: formatDvrTimestamp(input.end, env.video.timeZone)
 		});
-		const outputPath = join(
-			env.video.clipDir,
-			`${safeSegment(input.cameraName) || 'camera'}_${formatFilenameTimestamp(input.start, env.video.timeZone)}_${formatFilenameTimestamp(input.end, env.video.timeZone)}_${id}.mp4`
-		);
+
+		let inputArgs: string[] | undefined;
+		if (session.requestedRate > 1) {
+			session.scaled =
+				(await openScaledPlayback({
+					url: playback.url,
+					redactedUrl: playback.redacted,
+					username: input.dvr.username,
+					password: input.dvr.password,
+					rate: session.requestedRate,
+					sdpDir: env.video.clipDir
+				})) ?? undefined;
+			if (session.scaled) {
+				inputArgs = session.scaled.inputArgs;
+				session.actualRate = session.scaled.actualRate;
+			} else {
+				session.actualRate = 1;
+			}
+		}
+
+		updateJob(id, {
+			status: 'pulling',
+			message:
+				session.actualRate > 1
+					? `Buscando gravacao no DVR em ${session.actualRate}x.`
+					: session.requestedRate > 1
+						? 'DVR nao aceitou velocidade alta; buscando em 1x.'
+						: 'Buscando gravacao no DVR.',
+			actualRate: session.actualRate
+		});
 
 		await runFfmpegDownload({
 			url: playback.url,
 			redactedUrl: playback.redacted,
 			secrets: [playback.url, input.dvr.password, encodeURIComponent(input.dvr.password)],
-			durationSeconds,
-			outputPath: partialPath,
+			durationSeconds: remainingSeconds,
+			outputPath: session.partialPath,
+			inputArgs,
+			signal: session.abort.signal,
 			onProgress: (progress) => {
+				const positionSeconds = Math.min(durationSeconds(input), session.atSeconds + (remainingSeconds * progress) / 100);
 				updateJob(id, {
-					progress: Math.max(1, Math.min(99, Math.round(progress))),
-					message: `Gerando clipe (${Math.round(progress)}%).`
+					positionSeconds,
+					progress: Math.max(1, Math.min(100, Math.round((positionSeconds / durationSeconds(input)) * 100))),
+					message: `Carregando trecho (${Math.round(progress)}%).`
 				});
 			}
 		});
 
-		const probe = await probeFile(partialPath);
-		if (!probe.hasVideo) {
-			throw new VideoExtractorError('VALIDATION_FAILED', 'O arquivo gerado nao contem video.');
+		if (!session.abort.signal.aborted && jobs.get(id)?.session?.seq === seq) {
+			updateJob(id, {
+				status: 'idle',
+				message: 'Trecho carregado ate o fim.',
+				positionSeconds: durationSeconds(input),
+				progress: 100
+			});
+			jobs.get(id)!.session = undefined;
 		}
-		await rename(partialPath, outputPath);
-		updateJob(id, {
-			status: 'completed',
-			message: 'Clipe pronto para revisao.',
-			progress: 100,
-			filePath: outputPath,
-			fileName: outputPath.split(/[\\/]/).pop(),
-			sizeBytes: probe.sizeBytes,
-			durationSeconds: probe.durationSeconds
-		});
 	} catch (error) {
-		await unlink(partialPath).catch(() => undefined);
+		if (session.abort.signal.aborted) return;
 		const message = error instanceof Error ? error.message : 'Falha ao gerar clipe.';
 		updateJob(id, {
 			status: 'failed',
-			message: 'Falha ao gerar clipe.',
+			message: 'Falha ao carregar trecho do clipe.',
 			error: message,
 			progress: 0
 		});
 	} finally {
-		releaseSlot();
+		session.scaled?.close();
+		if (acquiredSlot) releaseSlot();
 		scheduleCleanup(id);
 	}
 }
@@ -159,27 +233,82 @@ export function createClipJob(input: CreateClipJobInput): ClipJob {
 	const id = crypto.randomUUID();
 	const now = new Date();
 	const expiresAt = new Date(now.getTime() + env.video.clipTtlMinutes * 60 * 1000);
-	const job: ClipJob = {
+	const job: InternalClipJob = {
 		id,
 		userId: input.userId,
 		attendanceId: input.attendanceId,
 		cameraId: input.cameraId,
 		cameraName: input.cameraName,
-		status: 'queued',
-		message: 'Clipe aguardando vaga para processamento.',
+		status: 'idle',
+		message: 'Escolha um ponto do recorte para iniciar o playback.',
 		progress: 0,
+		durationSeconds: durationSeconds(input),
+		positionSeconds: 0,
+		rate: 8,
+		actualRate: 8,
+		streamSeq: 0,
 		start: input.start.toISOString(),
 		end: input.end.toISOString(),
 		createdAt: now.toISOString(),
 		updatedAt: now.toISOString(),
-		expiresAt: expiresAt.toISOString()
+		expiresAt: expiresAt.toISOString(),
+		input,
+		partialPaths: new Set()
 	};
 	jobs.set(id, job);
 	scheduleCleanup(id);
-	void runJob(id, input);
 	return job;
 }
 
-export function getClipJob(id: string): ClipJob | undefined {
+export function getClipJob(id: string): InternalClipJob | undefined {
+	return jobs.get(id);
+}
+
+export async function setClipPosition(id: string, atSeconds: number, rate: ClipRate): Promise<InternalClipJob | undefined> {
+	const job = jobs.get(id);
+	if (!job) return undefined;
+	const at = clampPosition(job.input, atSeconds);
+	if (at >= job.durationSeconds) {
+		stopSession(job);
+		updateJob(id, {
+			status: 'idle',
+			message: 'Fim do recorte.',
+			positionSeconds: job.durationSeconds,
+			progress: 100,
+			rate,
+			actualRate: rate,
+			partialPath: undefined
+		});
+		return jobs.get(id);
+	}
+
+	if (job.session && job.session.requestedRate === rate && Math.abs(job.session.atSeconds - at) < 1) return job;
+
+	stopSession(job);
+	const seq = job.streamSeq + 1;
+	const partialPath = join(env.video.clipDir, `${id}.${seq}.partial.mp4`);
+	job.partialPaths.add(partialPath);
+	deleteOldPartials(job, partialPath);
+	const session: ActiveSession = {
+		seq,
+		atSeconds: at,
+		requestedRate: rate,
+		actualRate: rate,
+		partialPath,
+		abort: new AbortController()
+	};
+	job.session = session;
+	updateJob(id, {
+		status: 'pulling',
+		message: 'Aguardando o DVR iniciar o playback.',
+		error: undefined,
+		progress: Math.max(0, Math.min(100, Math.round((at / job.durationSeconds) * 100))),
+		positionSeconds: at,
+		rate,
+		actualRate: rate,
+		streamSeq: seq,
+		partialPath
+	});
+	void runSession(id, seq);
 	return jobs.get(id);
 }

@@ -8,7 +8,7 @@ import type { AppBindings } from '../http/types';
 import { decryptCameraPassword } from '../security/cameraCrypto';
 import { parseTimestamp, validateRange } from '../services/video/datetime';
 import { VideoExtractorError } from '../services/video/errors';
-import { createClipJob, getClipJob } from '../services/video/jobs';
+import { createClipJob, getClipJob, isClipRate, setClipPosition, type ClipJob } from '../services/video/jobs';
 
 export const clipRoutes = new Hono<AppBindings>();
 
@@ -44,7 +44,7 @@ async function assertAttendanceClipAccess(userId: string, academyId: string, rec
 	if (receptionistId !== userId) assertCanAccessAcademy(user, academyId);
 }
 
-function publicJob(job: NonNullable<ReturnType<typeof getClipJob>>) {
+function publicJob(job: ClipJob) {
 	return {
 		id: job.id,
 		attendanceId: job.attendanceId,
@@ -54,8 +54,11 @@ function publicJob(job: NonNullable<ReturnType<typeof getClipJob>>) {
 		message: job.message,
 		progress: job.progress,
 		error: job.error,
-		sizeBytes: job.sizeBytes,
 		durationSeconds: job.durationSeconds,
+		positionSeconds: job.positionSeconds,
+		rate: job.rate,
+		actualRate: job.actualRate,
+		streamSeq: job.streamSeq,
 		start: job.start,
 		end: job.end,
 		createdAt: job.createdAt,
@@ -176,20 +179,85 @@ clipRoutes.get('/clips/jobs/:jobId', async (c) => {
 	return c.json({ job: publicJob(job) });
 });
 
-function parseRangeHeader(range: string | undefined, size: number): { start: number; end: number } | null {
-	if (!range) return null;
-	const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-	if (!match) return null;
-	if (!match[1] && !match[2]) return null;
-	let start = match[1] ? Number(match[1]) : 0;
-	let end = match[2] ? Number(match[2]) : size - 1;
-	if (!match[1] && match[2]) {
-		const suffixLength = Number(match[2]);
-		start = Math.max(size - suffixLength, 0);
-		end = size - 1;
-	}
-	if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end >= size || start > end) return null;
-	return { start, end };
+const STREAM_POLL_MS = 300;
+const STREAM_CHUNK_BYTES = 1024 * 1024;
+
+function delay(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clipHeaders(filename: string) {
+	return {
+		'Content-Type': 'video/mp4',
+		'Content-Disposition': `inline; filename="${filename.replace(/"/g, '')}"`
+	};
+}
+
+function parseAt(value: string | undefined): number {
+	if (!value) return 0;
+	const at = Number(value);
+	if (!Number.isFinite(at) || at < 0) throw badRequest('Ponto inicial do clipe invalido.');
+	return at;
+}
+
+function parseRate(value: string | undefined) {
+	const rate = Number(value ?? 8);
+	if (!isClipRate(rate)) throw badRequest('Velocidade invalida para o clipe.');
+	return rate;
+}
+
+function streamGrowingClip(jobId: string, streamSeq: number): ReadableStream<Uint8Array> {
+	let cancelled = false;
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			void (async () => {
+				let offset = 0;
+				try {
+					while (!cancelled) {
+						const currentJob = getClipJob(jobId);
+						if (!currentJob || currentJob.streamSeq !== streamSeq) {
+							controller.close();
+							return;
+						}
+						if (currentJob.status === 'failed') {
+							controller.close();
+							return;
+						}
+						if (!currentJob.partialPath) {
+							controller.close();
+							return;
+						}
+
+						const file = Bun.file(currentJob.partialPath);
+						if (await file.exists()) {
+							const size = file.size;
+							if (size > offset) {
+								const end = Math.min(size, offset + STREAM_CHUNK_BYTES);
+								const chunk = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+								if (chunk.length > 0) {
+									controller.enqueue(chunk);
+									offset = end;
+									continue;
+								}
+							}
+
+							if (currentJob.status === 'idle') {
+								controller.close();
+								return;
+							}
+						}
+
+						await delay(STREAM_POLL_MS);
+					}
+				} catch (error) {
+					if (!cancelled) controller.error(error);
+				}
+			})();
+		},
+		cancel() {
+			cancelled = true;
+		}
+	});
 }
 
 clipRoutes.get('/clips/jobs/:jobId/stream', async (c) => {
@@ -197,36 +265,16 @@ clipRoutes.get('/clips/jobs/:jobId/stream', async (c) => {
 	const job = getClipJob(c.req.param('jobId'));
 	if (!job) throw notFound();
 	if (job.userId !== user.id) throw forbidden();
-	if (job.status !== 'completed' || !job.filePath) throw conflict('O clipe ainda nao esta pronto.');
+	const positioned = await setClipPosition(job.id, parseAt(c.req.query('at')), parseRate(c.req.query('rate')));
+	if (!positioned) throw notFound();
+	if (positioned.status === 'failed') throw conflict(positioned.error || 'Falha ao gerar o clipe.');
+	if (!positioned.partialPath) throw conflict('Ponto do clipe nao possui stream ativo.');
 
-	const file = Bun.file(job.filePath);
-	if (!(await file.exists())) throw notFound('Arquivo do clipe nao encontrado. Gere o clipe novamente.');
-	const size = file.size;
-	const filename = job.fileName ?? `${job.id}.mp4`;
-	const range = parseRangeHeader(c.req.header('range'), size);
-	const baseHeaders = {
-		'Accept-Ranges': 'bytes',
-		'Content-Type': 'video/mp4',
-		'Content-Disposition': `inline; filename="${filename.replace(/"/g, '')}"`
-	};
-
-	if (!range) {
-		return new Response(file.stream(), {
-			status: 200,
-			headers: {
-				...baseHeaders,
-				'Content-Length': String(size)
-			}
-		});
-	}
-
-	const body = file.slice(range.start, range.end + 1);
-	return new Response(body.stream(), {
-		status: 206,
+	return new Response(streamGrowingClip(positioned.id, positioned.streamSeq), {
+		status: 200,
 		headers: {
-			...baseHeaders,
-			'Content-Length': String(range.end - range.start + 1),
-			'Content-Range': `bytes ${range.start}-${range.end}/${size}`
+			...clipHeaders(`${positioned.id}.${positioned.streamSeq}.mp4`),
+			'Cache-Control': 'no-store'
 		}
 	});
 });

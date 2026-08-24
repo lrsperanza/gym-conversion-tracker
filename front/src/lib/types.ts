@@ -208,12 +208,15 @@ export type ClipJob = {
 	attendanceId: string;
 	cameraId: string;
 	cameraName: string;
-	status: 'queued' | 'running' | 'completed' | 'failed';
+	status: 'idle' | 'pulling' | 'failed';
 	message: string;
 	progress: number;
 	error?: string;
-	sizeBytes?: number;
-	durationSeconds?: number | null;
+	durationSeconds: number;
+	positionSeconds: number;
+	rate: 1 | 2 | 4 | 8;
+	actualRate: 1 | 2 | 4 | 8;
+	streamSeq: number;
 	start: string;
 	end: string;
 	createdAt: string;

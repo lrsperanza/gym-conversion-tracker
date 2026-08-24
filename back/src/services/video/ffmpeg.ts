@@ -77,6 +77,8 @@ export type DownloadOptions = {
 	secrets: string[];
 	durationSeconds: number;
 	outputPath: string;
+	inputArgs?: string[];
+	signal?: AbortSignal;
 	verbose?: boolean;
 	onProgress?: (pct: number) => void;
 };
@@ -109,6 +111,16 @@ async function spawnAttempt(argv: string[], opts: DownloadOptions): Promise<Atte
 	let lastActivity = startedAt;
 	const overallTimeoutMs = Math.max(180_000, opts.durationSeconds * 3000 + 120_000);
 	let killReason: string | null = null;
+	const abort = () => {
+		killReason = 'Processamento do clipe cancelado.';
+		try {
+			proc.kill();
+		} catch {
+			// Process already exited.
+		}
+	};
+	opts.signal?.addEventListener('abort', abort, { once: true });
+	if (opts.signal?.aborted) abort();
 
 	const watchdog = setInterval(() => {
 		const now = Date.now();
@@ -162,6 +174,7 @@ async function spawnAttempt(argv: string[], opts: DownloadOptions): Promise<Atte
 
 	const exitCode = await proc.exited;
 	clearInterval(watchdog);
+	opts.signal?.removeEventListener('abort', abort);
 	await Promise.allSettled([readStdout, readStderr]);
 	activeFfmpeg = null;
 	return { exitCode, stderrTail: stderrTail.trim(), killReason };
@@ -176,10 +189,7 @@ function baseArgs(opts: DownloadOptions): string[] {
 		'-nostats',
 		'-progress',
 		'pipe:1',
-		'-rtsp_transport',
-		'tcp',
-		'-i',
-		opts.url,
+		...(opts.inputArgs ?? ['-rtsp_transport', 'tcp', '-i', opts.url]),
 		'-t',
 		String(opts.durationSeconds),
 		'-map',
@@ -190,16 +200,8 @@ function baseArgs(opts: DownloadOptions): string[] {
 }
 
 export async function runFfmpegDownload(opts: DownloadOptions): Promise<void> {
-	const suffix = ['-movflags', '+faststart', '-y', opts.outputPath];
-	let result = await spawnAttempt(['ffmpeg', ...baseArgs(opts), '-c', 'copy', ...suffix], opts);
-
-	if (
-		result.exitCode !== 0 &&
-		!result.killReason &&
-		/codec not currently supported in container|could not find tag for codec/i.test(result.stderrTail)
-	) {
-		result = await spawnAttempt(['ffmpeg', ...baseArgs(opts), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '64k', ...suffix], opts);
-	}
+	const suffix = ['-movflags', '+frag_keyframe+empty_moov+default_base_moof', '-y', opts.outputPath];
+	const result = await spawnAttempt(['ffmpeg', ...baseArgs(opts), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '64k', ...suffix], opts);
 
 	if (result.killReason) {
 		throw new VideoExtractorError('RTSP_ERROR', result.killReason, result.stderrTail || undefined);

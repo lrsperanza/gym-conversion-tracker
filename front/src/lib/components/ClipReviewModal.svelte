@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { dateTime } from '$lib/api/client';
-	import { createClip, fetchClipUrl, getClipJob, listClipCameras } from '$lib/api/clips';
+	import { createClip, clipStreamUrl, getClipJob, listClipCameras } from '$lib/api/clips';
 	import { errorMessage } from '$lib/helpers';
 	import type { AcademyCamera, ClipJob, LeadEvent } from '$lib/types';
 
@@ -13,21 +14,53 @@
 	} = $props();
 
 	const POLL_INTERVAL_MS = 5_000;
+	const DEFAULT_RATE = 8;
+	const PLAYBACK_RATES = [1, 2, 4, 8] as const;
+	const clockFormatter = new Intl.DateTimeFormat('pt-BR', {
+		timeZone: 'America/Sao_Paulo',
+		hour: '2-digit',
+		minute: '2-digit',
+		second: '2-digit'
+	});
+
+	type PlaybackRate = (typeof PLAYBACK_RATES)[number];
 
 	let selectedCameraId = $state('');
 	let startValue = $derived(event ? datetimeLocalValue(event.created_at, -5) : '');
 	let endValue = $derived(event ? datetimeLocalValue(event.created_at, 2) : '');
-	let busy = $state(false);
+	let submitting = $state(false);
 	let message = $state('');
 	let messageKind = $state<'info' | 'warning' | 'error'>('info');
 	let job = $state<ClipJob | null>(null);
 	let videoUrl = $state<string | null>(null);
+	let videoElement = $state<HTMLVideoElement | null>(null);
+	let baseOffsetSeconds = $state(0);
+	let currentOffsetSeconds = $state(0);
+	let bufferedOffsetSeconds = $state(0);
+	let selectedRate = $state<PlaybackRate>(DEFAULT_RATE);
+	let isBuffering = $state(false);
+	let isPlaying = $state(false);
+	let isMuted = $state(true);
+	let isSeeking = $state(false);
 
 	let pollToken = 0;
-	let currentVideoUrl: string | null = null;
+	let streamToken = 0;
 
 	let camerasPromise = $derived(event ? listClipCameras(event.academy_id) : null);
-	let canSubmit = $derived(Boolean(event && startValue && endValue && !busy));
+	let canSubmit = $derived(Boolean(event && startValue && endValue && !submitting));
+	let clipDurationSeconds = $derived(job ? Math.max(0, job.durationSeconds) : 0);
+	let generatedProgressPercent = $derived(
+		job && job.durationSeconds > 0
+			? `${Math.max(0, Math.min(100, (job.positionSeconds / job.durationSeconds) * 100))}%`
+			: '0%'
+	);
+	let generatedProgressLabel = $derived(
+		job && job.durationSeconds > 0
+			? `${Math.max(0, Math.min(100, Math.round((job.positionSeconds / job.durationSeconds) * 100)))}%`
+			: ''
+	);
+	let currentPercent = $derived(offsetPercent(currentOffsetSeconds));
+	let bufferedPercent = $derived(offsetPercent(bufferedOffsetSeconds));
 	let messageClass = $derived(
 		messageKind === 'error'
 			? 'border-red-200 bg-red-50 text-red-800'
@@ -35,11 +68,17 @@
 				? 'border-amber-200 bg-amber-50 text-amber-900'
 				: 'border-sky-200 bg-sky-50 text-sky-900'
 	);
-	let progressLabel = $derived(
-		job && job.status !== 'failed'
-			? `${Math.max(0, Math.min(100, Math.round(job.progress)))}%`
-			: ''
-	);
+	let canUsePlayer = $derived(Boolean(job && videoUrl && clipDurationSeconds > 0));
+	let currentClockLabel = $derived(formatClockTime(currentOffsetSeconds));
+	let bufferedClockLabel = $derived(formatClockTime(bufferedOffsetSeconds));
+	let startClockLabel = $derived(formatClockTime(0));
+	let endClockLabel = $derived(formatClockTime(clipDurationSeconds));
+	let playerNote = $derived.by(() => {
+		if (!job) return '';
+		if (job.status === 'pulling' && job.actualRate) return `DVR em ${job.actualRate}x`;
+		if (job.actualRate && job.actualRate !== selectedRate) return `DVR em ${job.actualRate}x`;
+		return '';
+	});
 
 	function delay(ms: number) {
 		return new Promise((resolve) => setTimeout(resolve, ms));
@@ -74,19 +113,22 @@
 		return selectedCameraId || defaultCameraId(cameras);
 	}
 
-	function setVideoUrl(nextUrl: string | null) {
-		if (currentVideoUrl) URL.revokeObjectURL(currentVideoUrl);
-		currentVideoUrl = nextUrl;
-		videoUrl = nextUrl;
-	}
-
 	function resetTransientState() {
 		selectedCameraId = '';
-		busy = false;
+		submitting = false;
 		message = '';
 		messageKind = 'info';
 		job = null;
-		setVideoUrl(null);
+		videoUrl = null;
+		videoElement = null;
+		baseOffsetSeconds = 0;
+		currentOffsetSeconds = 0;
+		bufferedOffsetSeconds = 0;
+		selectedRate = DEFAULT_RATE;
+		isBuffering = false;
+		isPlaying = false;
+		isMuted = true;
+		isSeeking = false;
 	}
 
 	function validateInterval(maxDurationMinutes: number) {
@@ -99,34 +141,211 @@
 		return '';
 	}
 
+	function clampOffset(value: number) {
+		if (!Number.isFinite(value)) return 0;
+		return Math.max(0, Math.min(clipDurationSeconds, value));
+	}
+
+	function offsetPercent(value: number) {
+		if (clipDurationSeconds <= 0) return '0%';
+		return `${(clampOffset(value) / clipDurationSeconds) * 100}%`;
+	}
+
+	function formatClockTime(offsetSeconds: number) {
+		if (!job) return '--:--:--';
+		const startTimestamp = Date.parse(job.start);
+		if (!Number.isFinite(startTimestamp)) return '--:--:--';
+		return clockFormatter.format(new Date(startTimestamp + clampOffset(offsetSeconds) * 1_000));
+	}
+
+	function statusLabel(status: ClipJob['status']) {
+		if (status === 'failed') return 'Falhou';
+		if (status === 'pulling') return 'Gerando trecho';
+		return 'Pronto';
+	}
+
+	function defaultJobMessage(currentJob: ClipJob) {
+		if (currentJob.status === 'failed') return currentJob.error || 'Falha ao preparar o vídeo.';
+		if (currentJob.status === 'pulling') return 'DVR gerando o trecho solicitado...';
+		return 'Linha do tempo pronta para navegar.';
+	}
+
+	function currentVideoOffset() {
+		if (!videoElement) return currentOffsetSeconds;
+		return clampOffset(baseOffsetSeconds + videoElement.currentTime);
+	}
+
+	function updateTimelineFromVideo() {
+		if (!videoElement) return;
+		if (!isSeeking) currentOffsetSeconds = currentVideoOffset();
+		if (videoElement.buffered.length > 0) {
+			const lastRange = videoElement.buffered.length - 1;
+			bufferedOffsetSeconds = clampOffset(baseOffsetSeconds + videoElement.buffered.end(lastRange));
+		}
+	}
+
+	function applyVideoSettings() {
+		if (!videoElement) return;
+		videoElement.defaultPlaybackRate = selectedRate;
+		videoElement.playbackRate = selectedRate;
+		videoElement.muted = isMuted;
+	}
+
+	function captureVideoElement(element: HTMLVideoElement) {
+		videoElement = element;
+		void tick().then(() => {
+			if (videoElement === element) applyVideoSettings();
+		});
+
+		return () => {
+			if (videoElement === element) videoElement = null;
+		};
+	}
+
+	async function tryPlayVideo() {
+		if (!videoElement) return;
+		try {
+			await videoElement.play();
+		} catch {
+			isPlaying = false;
+		}
+	}
+
+	function handleVideoReady() {
+		applyVideoSettings();
+		updateTimelineFromVideo();
+	}
+
+	function handleCanPlay() {
+		isBuffering = false;
+		applyVideoSettings();
+	}
+
+	function handlePlaying() {
+		isPlaying = true;
+		isBuffering = false;
+	}
+
+	function handlePause() {
+		isPlaying = false;
+		isBuffering = false;
+	}
+
+	function handleWaiting() {
+		isBuffering = true;
+	}
+
+	function handleVolumeChange() {
+		if (!videoElement) return;
+		isMuted = videoElement.muted;
+	}
+
+	async function togglePlay() {
+		if (!videoElement) return;
+		if (videoElement.paused) {
+			isBuffering = true;
+			await tryPlayVideo();
+		} else {
+			videoElement.pause();
+		}
+	}
+
+	function toggleMute() {
+		isMuted = !isMuted;
+		if (videoElement) videoElement.muted = isMuted;
+	}
+
+	async function loadStreamFromOffset(targetOffset: number, rate: PlaybackRate, token: number) {
+		if (!job || token !== pollToken) return false;
+		const requestToken = ++streamToken;
+		const safeOffset = clampOffset(targetOffset);
+		baseOffsetSeconds = safeOffset;
+		currentOffsetSeconds = safeOffset;
+		bufferedOffsetSeconds = safeOffset;
+		isBuffering = true;
+		isSeeking = false;
+		videoUrl = null;
+
+		try {
+			const nextUrl = await clipStreamUrl(job.id, safeOffset, rate);
+			if (token !== pollToken || requestToken !== streamToken) return false;
+			videoUrl = nextUrl;
+			await tick();
+			if (token !== pollToken || requestToken !== streamToken) return false;
+			applyVideoSettings();
+			await tryPlayVideo();
+			return true;
+		} catch (error) {
+			if (token !== pollToken || requestToken !== streamToken) return false;
+			isBuffering = false;
+			messageKind = 'error';
+			message = errorMessage(error, 'Não foi possível carregar o ponto selecionado.');
+			return false;
+		}
+	}
+
+	async function seekToOffset(targetOffset: number) {
+		if (!job) return;
+		const token = pollToken;
+		await loadStreamFromOffset(targetOffset, selectedRate, token);
+	}
+
+	async function changePlaybackRate(nextRate: PlaybackRate) {
+		if (nextRate === selectedRate && videoElement?.playbackRate === nextRate) return;
+		const targetOffset = currentVideoOffset();
+		selectedRate = nextRate;
+		applyVideoSettings();
+		if (job) await loadStreamFromOffset(targetOffset, nextRate, pollToken);
+	}
+
+	function handleSeekInput(inputEvent: Event) {
+		const target = inputEvent.currentTarget as HTMLInputElement;
+		isSeeking = true;
+		currentOffsetSeconds = clampOffset(Number(target.value));
+	}
+
+	async function handleSeekCommit(inputEvent: Event) {
+		const target = inputEvent.currentTarget as HTMLInputElement;
+		await seekToOffset(Number(target.value));
+	}
+
+	async function handleRateChange(changeEvent: Event) {
+		const target = changeEvent.currentTarget as HTMLSelectElement;
+		const nextRate = Number(target.value) as PlaybackRate;
+		if (PLAYBACK_RATES.includes(nextRate)) await changePlaybackRate(nextRate);
+	}
+
 	async function waitForJob(initialJob: ClipJob, token: number) {
 		let currentJob = initialJob;
-		while (currentJob.status !== 'completed' && currentJob.status !== 'failed') {
+		while (token === pollToken && currentJob.status !== 'failed') {
 			await delay(POLL_INTERVAL_MS);
 			if (token !== pollToken) return;
-			currentJob = await getClipJob(currentJob.id);
+
+			try {
+				currentJob = await getClipJob(currentJob.id);
+			} catch (error) {
+				if (token !== pollToken) return;
+				messageKind = 'warning';
+				message = errorMessage(error, 'Não foi possível atualizar o status do DVR.');
+				continue;
+			}
+
 			if (token !== pollToken) return;
 			job = currentJob;
-			messageKind = 'info';
-			message = currentJob.message || 'Preparando o vídeo...';
+			messageKind = currentJob.status === 'failed' ? 'error' : 'info';
+			message = currentJob.message || defaultJobMessage(currentJob);
 		}
 
 		if (currentJob.status === 'failed') {
-			throw new Error(currentJob.error || currentJob.message || 'Falha ao preparar o vídeo.');
+			messageKind = 'error';
+			message = currentJob.error || currentJob.message || 'Falha ao preparar o vídeo.';
+			isBuffering = false;
 		}
-
-		message = 'Vídeo pronto para revisão.';
-		const url = await fetchClipUrl(currentJob.id);
-		if (token !== pollToken) {
-			URL.revokeObjectURL(url);
-			return;
-		}
-		setVideoUrl(url);
 	}
 
 	async function submitClip(submitEvent: SubmitEvent, cameraId: string, maxDurationMinutes: number) {
 		submitEvent.preventDefault();
-		if (!event || !cameraId || busy) return;
+		if (!event || !cameraId || submitting) return;
 
 		const validationError = validateInterval(maxDurationMinutes);
 		if (validationError) {
@@ -137,11 +356,20 @@
 
 		const currentEvent = event;
 		const token = ++pollToken;
-		busy = true;
+		++streamToken;
+		submitting = true;
 		messageKind = 'info';
 		message = 'Solicitando o recorte ao DVR...';
 		job = null;
-		setVideoUrl(null);
+		videoUrl = null;
+		videoElement = null;
+		baseOffsetSeconds = 0;
+		currentOffsetSeconds = 0;
+		bufferedOffsetSeconds = 0;
+		selectedRate = DEFAULT_RATE;
+		isBuffering = false;
+		isPlaying = false;
+		isSeeking = false;
 
 		try {
 			const createdJob = await createClip(
@@ -152,20 +380,23 @@
 			);
 			if (token !== pollToken) return;
 			job = createdJob;
-			message = createdJob.message || 'Recorte em andamento...';
-			await waitForJob(createdJob, token);
+			message = createdJob.message || 'Linha do tempo pronta para navegar.';
+			await loadStreamFromOffset(0, DEFAULT_RATE, token);
+			if (token !== pollToken) return;
+			void waitForJob(createdJob, token);
 		} catch (error) {
 			if (token !== pollToken) return;
 			messageKind = 'error';
 			message = errorMessage(error, 'Não foi possível preparar o vídeo.');
 		} finally {
-			if (token === pollToken) busy = false;
+			if (token === pollToken) submitting = false;
 		}
 	}
 
 	function handleClose() {
-		if (busy) return;
+		if (submitting) return;
 		++pollToken;
+		++streamToken;
 		resetTransientState();
 		onClose();
 	}
@@ -176,7 +407,7 @@
 	open={event !== null}
 	onclose={handleClose}
 	oncancel={(dialogEvent) => {
-		if (busy) dialogEvent.preventDefault();
+		if (submitting) dialogEvent.preventDefault();
 	}}
 	onclick={(dialogEvent) => {
 		if (dialogEvent.target === dialogEvent.currentTarget) handleClose();
@@ -199,7 +430,7 @@
 					class="rounded-full p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
 					onclick={handleClose}
 					aria-label="Fechar modal"
-					disabled={busy}
+					disabled={submitting}
 				>
 					<svg class="size-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
 						<path
@@ -215,8 +446,9 @@
 				<p
 					class="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900"
 				>
-					O DVR reproduz as gravações em tempo real. Um recorte de 5 minutos pode levar cerca de
-					5 minutos para ficar pronto.
+					A duração completa aparece na linha do tempo desde o início. Escolher outro
+					horário reinicia a reprodução naquele ponto; o padrão é 8x e o DVR pode avançar
+					por quadros-chave nessa velocidade.
 				</p>
 
 				{#if camerasPromise}
@@ -231,7 +463,7 @@
 								type="button"
 								class="rounded-2xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
 								onclick={handleClose}
-								disabled={busy}
+								disabled={submitting}
 							>
 								Fechar
 							</button>
@@ -251,7 +483,7 @@
 									type="button"
 									class="rounded-2xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
 									onclick={handleClose}
-									disabled={busy}
+									disabled={submitting}
 								>
 									Fechar
 								</button>
@@ -273,7 +505,7 @@
 										onchange={(changeEvent) => {
 											selectedCameraId = changeEvent.currentTarget.value;
 										}}
-										disabled={busy}
+										disabled={submitting}
 										required
 									>
 										{#each data.cameras as camera (camera.id)}
@@ -292,7 +524,7 @@
 											class="mt-1 w-full rounded-2xl border-slate-300"
 											type="datetime-local"
 											bind:value={startValue}
-											disabled={busy}
+											disabled={submitting}
 											required
 										/>
 									</label>
@@ -302,7 +534,7 @@
 											class="mt-1 w-full rounded-2xl border-slate-300"
 											type="datetime-local"
 											bind:value={endValue}
-											disabled={busy}
+											disabled={submitting}
 											required
 										/>
 									</label>
@@ -326,37 +558,135 @@
 										<div class="flex flex-wrap items-center justify-between gap-2">
 											<p class="font-semibold text-slate-800">{job.cameraName}</p>
 											<p class="text-xs font-bold uppercase tracking-wide text-slate-500">
-												{job.status === 'completed'
-													? 'Concluído'
-													: job.status === 'failed'
-														? 'Falhou'
-														: 'Processando'}
+												{statusLabel(job.status)}
 											</p>
 										</div>
-										{#if progressLabel}
+										{#if generatedProgressLabel}
 											<div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
 												<div
 													class="h-full rounded-full bg-sky-600 transition-all"
-													style:width={progressLabel}
+													style:width={generatedProgressPercent}
 												></div>
 											</div>
-											<p class="mt-1 text-xs text-slate-500">{progressLabel}</p>
+											<p class="mt-1 text-xs text-slate-500">
+												DVR gerado até {formatClockTime(job.positionSeconds)} ·
+												{generatedProgressLabel}
+											</p>
 										{/if}
 									</div>
 								{/if}
 
 								{#if videoUrl}
-									<div class="grid gap-2">
-										<video
-											class="aspect-video w-full rounded-2xl bg-slate-950"
-											controls
-											muted
-											src={videoUrl}
-											aria-label="Clipe da câmera para revisão da venda"
-										></video>
+									<div class="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+										<div class="relative overflow-hidden rounded-2xl bg-slate-950">
+											{#key videoUrl}
+												<video
+													{@attach captureVideoElement}
+													class="aspect-video w-full bg-slate-950"
+													autoplay
+													crossorigin="use-credentials"
+													muted={isMuted}
+													playsinline
+													src={videoUrl}
+													aria-label="Clipe da câmera para revisão da venda"
+													onloadedmetadata={handleVideoReady}
+													oncanplay={handleCanPlay}
+													onplaying={handlePlaying}
+													onplay={handlePlaying}
+													onpause={handlePause}
+													onended={handlePause}
+													onwaiting={handleWaiting}
+													onstalled={handleWaiting}
+													onprogress={updateTimelineFromVideo}
+													ontimeupdate={updateTimelineFromVideo}
+													onvolumechange={handleVolumeChange}
+												></video>
+											{/key}
+											{#if isBuffering}
+												<div
+													class="absolute inset-0 grid place-items-center bg-slate-950/35 text-sm font-semibold text-white"
+												>
+													Carregando ponto selecionado...
+												</div>
+											{/if}
+										</div>
+
+										<div class="grid gap-3">
+											<div class="relative h-2 overflow-hidden rounded-full bg-slate-200">
+												<div
+													class="absolute inset-y-0 left-0 rounded-full bg-slate-300"
+													style:width={bufferedPercent}
+												></div>
+												<div
+													class="absolute inset-y-0 left-0 rounded-full bg-sky-600"
+													style:width={currentPercent}
+												></div>
+											</div>
+											<input
+												class="w-full accent-sky-600"
+												type="range"
+												min="0"
+												max={clipDurationSeconds}
+												step="0.1"
+												value={currentOffsetSeconds}
+												title={currentClockLabel}
+												aria-label="Selecionar horário do vídeo"
+												aria-valuetext={currentClockLabel}
+												disabled={!canUsePlayer}
+												oninput={handleSeekInput}
+												onchange={handleSeekCommit}
+											/>
+											<div class="flex items-center justify-between text-xs font-semibold text-slate-500">
+												<span>{startClockLabel}</span>
+												<span class="text-slate-700">{currentClockLabel}</span>
+												<span>{endClockLabel}</span>
+											</div>
+										</div>
+
+										<div class="flex flex-wrap items-center justify-between gap-3">
+											<div class="flex flex-wrap items-center gap-2">
+												<button
+													type="button"
+													class="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-60"
+													onclick={togglePlay}
+													disabled={!canUsePlayer}
+												>
+													{isPlaying ? 'Pausar' : 'Reproduzir'}
+												</button>
+												<button
+													type="button"
+													class="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-white disabled:opacity-60"
+													onclick={toggleMute}
+													disabled={!canUsePlayer}
+												>
+													{isMuted ? 'Ativar som' : 'Silenciar'}
+												</button>
+												<label class="text-sm font-semibold text-slate-700">
+													Velocidade
+													<select
+														class="ml-2 rounded-xl border-slate-300 text-sm"
+														value={selectedRate}
+														onchange={handleRateChange}
+														disabled={!canUsePlayer}
+													>
+														{#each PLAYBACK_RATES as rate (rate)}
+															<option value={rate}>{rate}x</option>
+														{/each}
+													</select>
+												</label>
+											</div>
+											<div class="text-xs text-slate-500">
+												{#if playerNote}
+													<span class="font-semibold text-slate-600">{playerNote}</span>
+													<span aria-hidden="true"> · </span>
+												{/if}
+												<span>Buffer até {bufferedClockLabel}</span>
+											</div>
+										</div>
+
 										<p class="text-xs text-slate-500">
-											O vídeo fica disponível temporariamente; gere novamente se precisar revisar
-											outro intervalo.
+											O vídeo fica disponível temporariamente; selecione qualquer horário do
+											intervalo para pedir aquele ponto ao DVR.
 										</p>
 									</div>
 								{/if}
@@ -366,7 +696,7 @@
 										type="button"
 										class="rounded-2xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
 										onclick={handleClose}
-										disabled={busy}
+										disabled={submitting}
 									>
 										Fechar
 									</button>
@@ -374,7 +704,7 @@
 										class="rounded-2xl bg-sky-600 px-5 py-3 font-bold text-white hover:bg-sky-700 disabled:opacity-60"
 										disabled={!canSubmit || !selectedId}
 									>
-										{busy ? 'Preparando vídeo...' : 'Gerar vídeo'}
+										{submitting ? 'Solicitando vídeo...' : 'Gerar vídeo'}
 									</button>
 								</div>
 							</form>
@@ -388,7 +718,7 @@
 								type="button"
 								class="rounded-2xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
 								onclick={handleClose}
-								disabled={busy}
+								disabled={submitting}
 							>
 								Fechar
 							</button>

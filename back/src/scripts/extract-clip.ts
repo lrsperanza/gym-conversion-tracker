@@ -6,11 +6,14 @@ import { decryptCameraPassword } from '../security/cameraCrypto';
 import { formatDvrTimestamp, formatFilenameTimestamp, parseTimestamp, validateRange } from '../services/video/datetime';
 import { ensureFfmpegTools, probeFile, runFfmpegDownload } from '../services/video/ffmpeg';
 import { buildPlaybackUrl } from '../services/video/intelbras';
+import { openScaledPlayback, type ClipRate, type ScaledPlaybackSession } from '../services/video/rtspScale';
 
 type Args = {
 	cameraId?: string;
 	start?: string;
 	end?: string;
+	at?: number;
+	rate?: ClipRate;
 	outputDir?: string;
 };
 
@@ -27,6 +30,14 @@ function parseArgs(argv: string[]): Args {
 			i += 1;
 		} else if (arg === '--end') {
 			args.end = next;
+			i += 1;
+		} else if (arg === '--at') {
+			const value = Number(next);
+			if (Number.isFinite(value)) args.at = value;
+			i += 1;
+		} else if (arg === '--rate') {
+			const value = Number(next);
+			if (value === 1 || value === 2 || value === 4 || value === 8) args.rate = value;
 			i += 1;
 		} else if (arg === '--output-dir') {
 			args.outputDir = next;
@@ -45,6 +56,9 @@ async function main() {
 	const start = parseTimestamp(args.start, env.video.timeZone);
 	const end = parseTimestamp(args.end, env.video.timeZone);
 	validateRange(start, end);
+	const requestedRate = args.rate ?? 1;
+	const atSeconds = Math.max(0, Math.floor(args.at ?? 0));
+	const effectiveStart = new Date(Math.min(start.getTime() + atSeconds * 1000, end.getTime()));
 
 	const [camera] = await sql<
 		Array<{
@@ -84,7 +98,7 @@ async function main() {
 		username: camera.username,
 		password,
 		channel: camera.channel,
-		startDvr: formatDvrTimestamp(start, env.video.timeZone),
+			startDvr: formatDvrTimestamp(effectiveStart, env.video.timeZone),
 		endDvr: formatDvrTimestamp(end, env.video.timeZone)
 	});
 
@@ -96,21 +110,44 @@ async function main() {
 		.replace(/[^a-z0-9_.-]+/gi, '-');
 	const outputPath = join(outputDir, fileName);
 	const partialPath = `${outputPath}.partial.mp4`;
-	const durationSeconds = Math.ceil((end.getTime() - start.getTime()) / 1000);
+	const durationSeconds = Math.max(1, Math.ceil((end.getTime() - effectiveStart.getTime()) / 1000));
+	let scaled: ScaledPlaybackSession | null = null;
+	let inputArgs: string[] | undefined;
+	if (requestedRate > 1) {
+		scaled = await openScaledPlayback({
+			url: playback.url,
+			redactedUrl: playback.redacted,
+			username: camera.username,
+			password,
+			rate: requestedRate,
+			sdpDir: outputDir
+		});
+		if (scaled) {
+			inputArgs = scaled.inputArgs;
+			console.info(`Velocidade negociada com DVR: ${scaled.actualRate}x`);
+		} else {
+			console.info('DVR nao aceitou velocidade alta; usando fallback 1x.');
+		}
+	}
 
-	await runFfmpegDownload({
-		url: playback.url,
-		redactedUrl: playback.redacted,
-		secrets: [playback.url, password, encodeURIComponent(password)],
-		durationSeconds,
-		outputPath: partialPath,
-		verbose: true,
-		onProgress: (progress) => console.info(`Progresso: ${Math.round(progress)}%`)
-	});
-	const probe = await probeFile(partialPath);
-	if (!probe.hasVideo) throw new Error('Arquivo gerado nao contem video.');
-	await rename(partialPath, outputPath);
-	console.info(outputPath);
+	try {
+		await runFfmpegDownload({
+			url: playback.url,
+			redactedUrl: playback.redacted,
+			secrets: [playback.url, password, encodeURIComponent(password)],
+			durationSeconds,
+			outputPath: partialPath,
+			inputArgs,
+			verbose: true,
+			onProgress: (progress) => console.info(`Progresso: ${Math.round(progress)}%`)
+		});
+		const probe = await probeFile(partialPath);
+		if (!probe.hasVideo) throw new Error('Arquivo gerado nao contem video.');
+		await rename(partialPath, outputPath);
+		console.info(outputPath);
+	} finally {
+		scaled?.close();
+	}
 }
 
 main()

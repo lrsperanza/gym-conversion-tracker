@@ -1,4 +1,4 @@
-import { api, ApiError } from './client';
+import { api } from './client';
 import { resolveApiHostUrl } from './hosts';
 import type { AcademyCamera, ClipJob } from '$lib/types';
 
@@ -21,13 +21,10 @@ export async function getClipJob(jobId: string) {
 	return data.job;
 }
 
-export async function fetchClipUrl(jobId: string) {
-	const response = await fetch(`${await resolveApiHostUrl()}/api/clips/jobs/${jobId}/stream`, {
-		credentials: 'include'
+export async function clipStreamUrl(jobId: string, atSeconds = 0, rate = 8) {
+	const params = new URLSearchParams({
+		at: String(Math.max(0, Math.floor(atSeconds))),
+		rate: String(rate)
 	});
-	if (!response.ok) {
-		const payload = await response.json().catch(() => null);
-		throw new ApiError(payload?.error?.message || 'Erro ao carregar vídeo.', response.status, payload?.error?.details);
-	}
-	return URL.createObjectURL(await response.blob());
+	return `${await resolveApiHostUrl()}/api/clips/jobs/${jobId}/stream?${params}`;
 }
