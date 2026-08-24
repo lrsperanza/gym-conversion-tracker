@@ -6,9 +6,16 @@
 	import Empty from '$lib/components/Empty.svelte';
 	import MetricTable from '$lib/components/MetricTable.svelte';
 	import Notice from '$lib/components/Notice.svelte';
-	import { dateToIso, errorMessage, formatDay, queryString, statusLabel } from '$lib/helpers';
+	import {
+		channelLabel,
+		dateToIso,
+		errorMessage,
+		formatDay,
+		queryString,
+		statusLabel
+	} from '$lib/helpers';
 	import { getSessionContext } from '$lib/session';
-	import type { Academy, Attendance, DashboardSummary } from '$lib/types';
+	import type { Academy, Attendance, AttendanceChannel, DashboardSummary } from '$lib/types';
 	import { onMount } from 'svelte';
 
 	type AuditRow = {
@@ -31,7 +38,12 @@
 	let auditRows = $state.raw<AuditRow[]>([]);
 	let dashboardLoading = $state(false);
 	let dashboardMessage = $state('');
-	let dashboardFilter = $state({ academyId: '', from: '', to: '' });
+	let dashboardFilter = $state({
+		academyId: '',
+		from: '',
+		to: '',
+		channel: '' as '' | AttendanceChannel
+	});
 	let activeAcademies = $derived(academies.filter((academy) => academy.active));
 	let revenuePerVisit = $derived(
 		dashboard?.kpi.attendances ? dashboard.kpi.revenue_cents / dashboard.kpi.attendances : 0
@@ -79,6 +91,7 @@
 			await loadDashboardSummary();
 		} catch (error) {
 			dashboardMessage = errorMessage(error);
+		} finally {
 			dashboardLoading = false;
 		}
 	}
@@ -100,17 +113,18 @@
 		const filter = queryString({
 			academyId: dashboardFilter.academyId,
 			from: dateToIso(dashboardFilter.from),
-			to: dateToIso(dashboardFilter.to, true)
+			to: dateToIso(dashboardFilter.to, true),
+			channel: dashboardFilter.channel
 		});
 		const [summary, audit] = await Promise.all([
 			api<DashboardSummary>(`/api/dashboard/summary${filter}`),
-			api<{ rows: AuditRow[] }>(
-				`/api/dashboard/audit${queryString({ academyId: dashboardFilter.academyId })}`
-			)
+			api<{ rows: AuditRow[] }>(`/api/dashboard/audit${filter}`)
 		]);
-		dashboard = summary;
+		if (!summary?.kpi || !Array.isArray(audit?.rows)) {
+			throw new Error('Resposta inválida do dashboard.');
+		}
 		auditRows = audit.rows;
-		dashboardLoading = false;
+		dashboard = summary;
 	}
 </script>
 
@@ -129,7 +143,7 @@
 					</p>
 				</div>
 				<form
-					class="grid gap-3 sm:grid-cols-4"
+					class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"
 					onsubmit={(event) => {
 						event.preventDefault();
 						void loadDashboard();
@@ -145,6 +159,17 @@
 							{#each academies as academy (academy.id)}
 								<option value={academy.id}>{academy.name}</option>
 							{/each}
+						</select>
+					</label>
+					<label class="text-sm font-medium text-slate-700">
+						Canal
+						<select
+							class="mt-1 w-full rounded-2xl border-slate-300"
+							bind:value={dashboardFilter.channel}
+						>
+							<option value="">Todos</option>
+							<option value="PRESENCIAL">{channelLabel('PRESENCIAL')}</option>
+							<option value="ONLINE">{channelLabel('ONLINE')}</option>
 						</select>
 					</label>
 					<label class="text-sm font-medium text-slate-700">
@@ -164,7 +189,8 @@
 						/>
 					</label>
 					<button
-						class="rounded-2xl bg-sky-600 px-5 py-3 font-bold text-white hover:bg-sky-700 disabled:opacity-60"
+						class="self-end rounded-2xl bg-sky-600 px-5 py-3 font-bold text-white hover:bg-sky-700 disabled:opacity-60"
+						type="submit"
 						disabled={dashboardLoading}
 					>
 						{dashboardLoading ? 'Atualizando...' : 'Aplicar'}

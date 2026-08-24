@@ -188,6 +188,7 @@ export const attendanceEventInputSchema = z.discriminatedUnion('type', [
 export const dashboardQuerySchema = z.object({
 	academyId: z.string().uuid().optional(),
 	from: z.string().datetime().optional(),
-	to: z.string().datetime().optional()
+	to: z.string().datetime().optional(),
+	channel: z.enum(['PRESENCIAL', 'ONLINE']).optional()
 });
 
