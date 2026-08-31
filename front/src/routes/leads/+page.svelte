@@ -145,7 +145,7 @@
 				Buscar lead
 				<input
 					class="mt-1 w-full rounded-2xl border-slate-300 text-base"
-					placeholder="Nome, email ou telefone"
+					placeholder="Nome, email, telefone ou recepcionista"
 					value={searchQuery}
 					oninput={(event) => scheduleSearch(event.currentTarget.value)}
 				/>

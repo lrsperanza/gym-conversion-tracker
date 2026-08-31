@@ -470,13 +470,24 @@ attendanceRoutes.get('/leads', async (c) => {
 				)
 			)
 			AND (${scheduledOnly} = false OR next_schedule."scheduled_for" IS NOT NULL)
-			AND (
-				${search || null}::text IS NULL
-				OR (${normalizedSearch || null}::text IS NOT NULL AND l."normalized_name" % ${normalizedSearch || null})
-				OR l."name" ILIKE ${searchPattern}
-				OR l."email" ILIKE ${searchPattern}
-				OR (${phoneDigits || null}::text IS NOT NULL AND l."whatsapp_e164" ILIKE ${phonePattern})
+		AND (
+			${search || null}::text IS NULL
+			OR (${normalizedSearch || null}::text IS NOT NULL AND l."normalized_name" % ${normalizedSearch || null})
+			OR l."name" ILIKE ${searchPattern}
+			OR l."email" ILIKE ${searchPattern}
+			OR (${phoneDigits || null}::text IS NOT NULL AND l."whatsapp_e164" ILIKE ${phonePattern})
+			OR EXISTS (
+				SELECT 1
+				FROM "gym-conversion-tracker"."attendances" receptionist_attendance
+				JOIN "gym-conversion-tracker"."users" receptionist
+					ON receptionist."id" = receptionist_attendance."receptionist_id"
+				WHERE receptionist_attendance."lead_id" = l."id"
+					AND (
+						receptionist."name" ILIKE ${searchPattern}
+						OR (${normalizedSearch || null}::text IS NOT NULL AND receptionist."normalized_name" % ${normalizedSearch || null})
+					)
 			)
+		)
 		ORDER BY
 			CASE WHEN ${scheduledOnly} THEN next_schedule."scheduled_for" END ASC NULLS LAST,
 			CASE WHEN ${normalizedSearch || null}::text IS NOT NULL THEN similarity(l."normalized_name", ${normalizedSearch || null}) END DESC NULLS LAST,
