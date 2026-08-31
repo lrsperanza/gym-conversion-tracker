@@ -119,6 +119,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			AND (${from}::timestamptz IS NULL OR s."created_at" >= ${from}::timestamptz)
 			AND (${to}::timestamptz IS NULL OR s."created_at" <= ${to}::timestamptz)
 			AND (${filters.channel ?? null}::text IS NULL OR a."channel"::text = ${filters.channel ?? null})
+			${scheduleScopeSql(filters)}
 			AND (${restrictToReceptionist} = false OR s."sold_by_user_id" = ${user.id})
 			AND (
 				${isGlobal} = true OR a."academy_id" IN (
@@ -208,12 +209,23 @@ function parseDashboardQuery(c: { req: { query: (key: string) => string | undefi
 		academyId: c.req.query('academyId') || undefined,
 		from: c.req.query('from') || undefined,
 		to: c.req.query('to') || undefined,
-		channel: c.req.query('channel') || undefined
+		channel: c.req.query('channel') || undefined,
+		weekdays: c.req.query('weekdays') || undefined,
+		hourFrom: c.req.query('hourFrom') || undefined,
+		hourTo: c.req.query('hourTo') || undefined
 	});
 }
 
+type DashboardFilters = {
+	academyId?: string;
+	channel?: 'PRESENCIAL' | 'ONLINE';
+	weekdays?: string;
+	hourFrom?: string;
+	hourTo?: string;
+};
+
 function attendanceScopeSql(
-	filters: { academyId?: string; channel?: 'PRESENCIAL' | 'ONLINE' },
+	filters: DashboardFilters,
 	from: string | null,
 	to: string | null,
 	access: { restrictToReceptionist: boolean; isGlobal: boolean; userId: string }
@@ -223,6 +235,7 @@ function attendanceScopeSql(
 			AND (${from}::timestamptz IS NULL OR a."started_at" >= ${from}::timestamptz)
 			AND (${to}::timestamptz IS NULL OR a."started_at" <= ${to}::timestamptz)
 			AND (${filters.channel ?? null}::text IS NULL OR a."channel"::text = ${filters.channel ?? null})
+			${scheduleScopeSql(filters)}
 			AND (${access.restrictToReceptionist} = false OR a."receptionist_id" = ${access.userId})
 			AND (
 				${access.isGlobal} = true OR a."academy_id" IN (
@@ -230,6 +243,16 @@ function attendanceScopeSql(
 					WHERE "user_id" = ${access.userId} AND "active" = true AND "academy_id" IS NOT NULL
 				)
 			)
+	`;
+}
+
+// Segmentação por grade horária: dia da semana (DOW, 0=domingo) e janela de horário,
+// sempre no fuso de America/Sao_Paulo sobre a."started_at". hourTo é inclusivo até o fim do minuto.
+function scheduleScopeSql(filters: Pick<DashboardFilters, 'weekdays' | 'hourFrom' | 'hourTo'>) {
+	return sql`
+		AND (${filters.weekdays ?? null}::text IS NULL OR EXTRACT(DOW FROM a."started_at" AT TIME ZONE 'America/Sao_Paulo')::int = ANY (string_to_array(${filters.weekdays ?? null}, ',')::int[]))
+		AND (${filters.hourFrom ?? null}::time IS NULL OR (a."started_at" AT TIME ZONE 'America/Sao_Paulo')::time >= ${filters.hourFrom ?? null}::time)
+		AND (${filters.hourTo ?? null}::time IS NULL OR (a."started_at" AT TIME ZONE 'America/Sao_Paulo')::time < (${filters.hourTo ?? null}::time + interval '1 minute'))
 	`;
 }
 

@@ -185,10 +185,18 @@ export const attendanceEventInputSchema = z.discriminatedUnion('type', [
 	})
 ]);
 
+const hourMinuteSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+
 export const dashboardQuerySchema = z.object({
 	academyId: z.string().uuid().optional(),
 	from: z.string().datetime().optional(),
 	to: z.string().datetime().optional(),
-	channel: z.enum(['PRESENCIAL', 'ONLINE']).optional()
+	channel: z.enum(['PRESENCIAL', 'ONLINE']).optional(),
+	weekdays: z
+		.string()
+		.regex(/^[0-6](,[0-6])*$/)
+		.optional(),
+	hourFrom: hourMinuteSchema.optional(),
+	hourTo: hourMinuteSchema.optional()
 });
 

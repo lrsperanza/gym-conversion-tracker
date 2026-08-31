@@ -38,10 +38,17 @@
 	let auditRows = $state.raw<AuditRow[]>([]);
 	let dashboardLoading = $state(false);
 	let dashboardMessage = $state('');
+	const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
 	let dashboardFilter = $state({
 		academyId: '',
 		from: '',
+		fromTime: '',
 		to: '',
+		toTime: '',
+		hourFrom: '',
+		hourTo: '',
+		weekdays: [] as number[],
 		channel: '' as '' | AttendanceChannel
 	});
 	let activeAcademies = $derived(academies.filter((academy) => academy.active));
@@ -109,12 +116,21 @@
 		}
 	}
 
+	function toggleWeekday(day: number) {
+		dashboardFilter.weekdays = dashboardFilter.weekdays.includes(day)
+			? dashboardFilter.weekdays.filter((value) => value !== day)
+			: [...dashboardFilter.weekdays, day].sort((a, b) => a - b);
+	}
+
 	async function loadDashboardSummary() {
 		const filter = queryString({
 			academyId: dashboardFilter.academyId,
-			from: dateToIso(dashboardFilter.from),
-			to: dateToIso(dashboardFilter.to, true),
-			channel: dashboardFilter.channel
+			from: dateToIso(dashboardFilter.from, false, dashboardFilter.fromTime),
+			to: dateToIso(dashboardFilter.to, true, dashboardFilter.toTime),
+			channel: dashboardFilter.channel,
+			weekdays: dashboardFilter.weekdays.length ? dashboardFilter.weekdays.join(',') : '',
+			hourFrom: dashboardFilter.hourFrom,
+			hourTo: dashboardFilter.hourTo
 		});
 		const [summary, audit] = await Promise.all([
 			api<DashboardSummary>(`/api/dashboard/summary${filter}`),
@@ -143,7 +159,7 @@
 					</p>
 				</div>
 				<form
-					class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"
+					class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
 					onsubmit={(event) => {
 						event.preventDefault();
 						void loadDashboard();
@@ -172,22 +188,83 @@
 							<option value="ONLINE">{channelLabel('ONLINE')}</option>
 						</select>
 					</label>
-					<label class="text-sm font-medium text-slate-700">
+					<div class="text-sm font-medium text-slate-700">
 						De
-						<input
-							class="mt-1 w-full rounded-2xl border-slate-300"
-							type="date"
-							bind:value={dashboardFilter.from}
-						/>
-					</label>
-					<label class="text-sm font-medium text-slate-700">
+						<div class="mt-1 flex gap-2">
+							<input
+								class="w-full rounded-2xl border-slate-300"
+								type="date"
+								bind:value={dashboardFilter.from}
+							/>
+							<input
+								class="w-full rounded-2xl border-slate-300"
+								type="time"
+								aria-label="Horário inicial do intervalo"
+								title="Horário inicial (opcional)"
+								bind:value={dashboardFilter.fromTime}
+							/>
+						</div>
+					</div>
+					<div class="text-sm font-medium text-slate-700">
 						Até
-						<input
-							class="mt-1 w-full rounded-2xl border-slate-300"
-							type="date"
-							bind:value={dashboardFilter.to}
-						/>
-					</label>
+						<div class="mt-1 flex gap-2">
+							<input
+								class="w-full rounded-2xl border-slate-300"
+								type="date"
+								bind:value={dashboardFilter.to}
+							/>
+							<input
+								class="w-full rounded-2xl border-slate-300"
+								type="time"
+								aria-label="Horário final do intervalo"
+								title="Horário final (opcional)"
+								bind:value={dashboardFilter.toTime}
+							/>
+						</div>
+					</div>
+					<div class="text-sm font-medium text-slate-700 sm:col-span-2">
+						Dias da semana
+						<div class="mt-1 flex flex-wrap gap-1">
+							{#each WEEKDAYS as weekday, index (index)}
+								<button
+									type="button"
+									class="rounded-full px-3 py-2 text-xs font-semibold transition {dashboardFilter.weekdays.includes(
+										index
+									)
+										? 'bg-sky-600 text-white'
+										: 'bg-slate-100 text-slate-600 hover:bg-slate-200'}"
+									aria-pressed={dashboardFilter.weekdays.includes(index)}
+									onclick={() => toggleWeekday(index)}
+								>
+									{weekday}
+								</button>
+							{/each}
+						</div>
+						<p class="mt-1 text-xs font-normal text-slate-400">
+							Nenhum selecionado = todos os dias.
+						</p>
+					</div>
+					<div class="text-sm font-medium text-slate-700">
+						Horário do dia
+						<div class="mt-1 flex items-center gap-2">
+							<input
+								class="w-full rounded-2xl border-slate-300"
+								type="time"
+								aria-label="Horário inicial do dia"
+								bind:value={dashboardFilter.hourFrom}
+							/>
+							<span class="text-slate-400">às</span>
+							<input
+								class="w-full rounded-2xl border-slate-300"
+								type="time"
+								aria-label="Horário final do dia"
+								bind:value={dashboardFilter.hourTo}
+							/>
+						</div>
+						<p class="mt-1 text-xs font-normal text-slate-400">
+							Opcional: filtra o horário de início em cada dia.
+						</p>
+					</div>
 					<button
 						class="self-end rounded-2xl bg-sky-600 px-5 py-3 font-bold text-white hover:bg-sky-700 disabled:opacity-60"
 						type="submit"

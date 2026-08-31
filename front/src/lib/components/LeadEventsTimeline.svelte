@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { api, dateTime, money } from '$lib/api/client';
+	import { isReceptionistOnly } from '$lib/auth/roles';
 	import { errorMessage, eventToneClass, eventTypeLabel, isScheduledEventType } from '$lib/helpers';
+	import { getSessionContext } from '$lib/session';
 	import type { LeadEvent } from '$lib/types';
 	import ClipReviewModal from './ClipReviewModal.svelte';
 
@@ -14,11 +16,14 @@
 		label?: string;
 	} = $props();
 
+	const { session } = getSessionContext();
+
 	/** Nestes tipos a descrição é gerada pelo backend e só repete o rótulo do evento. */
 	const GENERATED_DESCRIPTION: string[] = ['SALE', 'TOUR_RECEPTIONIST', 'TOUR_PROFESSOR'];
 
 	let open = $state(false);
 	let reviewEvent = $state<LeadEvent | null>(null);
+	let canReviewClips = $derived(!isReceptionistOnly(session.user));
 
 	/** Muda quando o lead troca ou quando um evento novo é registrado, forçando recarga. */
 	let requestKey = $derived(`${leadId}:${count ?? ''}`);
@@ -93,13 +98,15 @@
 										<p class="text-xs font-bold text-emerald-800">
 											{event.label_snapshot} · {money(event.amount_cents)}
 										</p>
-										<button
-											type="button"
-											class="rounded-full border border-emerald-200 px-2.5 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50"
-											onclick={() => (reviewEvent = event)}
-										>
-											Revisar vídeo
-										</button>
+										{#if canReviewClips}
+											<button
+												type="button"
+												class="rounded-full border border-emerald-200 px-2.5 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50"
+												onclick={() => (reviewEvent = event)}
+											>
+												Revisar vídeo
+											</button>
+										{/if}
 									</div>
 								{/if}
 								{#if event.loss_reason_label}
@@ -125,5 +132,7 @@
 		{/key}
 	{/if}
 
-	<ClipReviewModal event={reviewEvent} onClose={() => (reviewEvent = null)} />
+	{#if canReviewClips}
+		<ClipReviewModal event={reviewEvent} onClose={() => (reviewEvent = null)} />
+	{/if}
 </div>

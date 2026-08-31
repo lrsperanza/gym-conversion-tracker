@@ -114,17 +114,19 @@ export function asCents(value: string) {
 	return Number.isFinite(parsed) ? Math.round(parsed * 100) : undefined;
 }
 
-export function dateToIso(value: string, endOfDay = false) {
+export function dateToIso(value: string, endOfDay = false, time = '') {
 	if (!value) return '';
 	const [year, month, day] = value.split('-').map(Number);
-	return new Date(
-		year,
-		month - 1,
-		day,
-		endOfDay ? 23 : 0,
-		endOfDay ? 59 : 0,
-		endOfDay ? 59 : 0
-	).toISOString();
+	let hours = endOfDay ? 23 : 0;
+	let minutes = endOfDay ? 59 : 0;
+	if (time) {
+		const [h, m] = time.split(':').map(Number);
+		if (Number.isFinite(h) && Number.isFinite(m)) {
+			hours = h;
+			minutes = m;
+		}
+	}
+	return new Date(year, month - 1, day, hours, minutes, endOfDay ? 59 : 0).toISOString();
 }
 
 export function queryString(params: Record<string, string | null | undefined>) {
