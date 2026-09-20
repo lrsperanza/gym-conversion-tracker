@@ -10,10 +10,13 @@ import {
   login,
   preencherCadastro,
 } from './flow.ts';
+import { generateTotp, totpSecondsRemaining } from './totp.ts';
 
 const OPTIONS = {
   usuario: { type: 'string' },
   senha: { type: 'string' },
+  'totp-secret': { type: 'string' },
+  'mostrar-totp': { type: 'string' },
   unidade: { type: 'string' },
   nome: { type: 'string' },
   sobrenome: { type: 'string' },
@@ -42,6 +45,8 @@ Uso:
 Credenciais (padrão: variáveis EVO_USUARIO / EVO_SENHA do .env):
   --usuario <email>          e-mail de acesso ao EVO
   --senha <senha>            senha de acesso
+  --totp-secret <base32>     chave 2FA do app autenticador (ou EVO_TOTP_SECRET)
+  --mostrar-totp <base32>    mostra o código atual para conferir no autenticador
   --unidade <texto>          unidade a selecionar no modal (padrão: "${DEFAULT_UNIDADE}")
 
 Dados do cadastro:
@@ -80,6 +85,17 @@ function aguardarInterrupcao(): Promise<void> {
   return new Promise((resolve) => process.once('SIGINT', () => resolve()));
 }
 
+async function mostrarTotp(secret: string): Promise<void> {
+	let ativo = true;
+	process.once('SIGINT', () => {
+		ativo = false;
+	});
+	while (ativo) {
+		console.log(`${generateTotp(secret)} (${totpSecondsRemaining()}s restantes)`);
+		await sleep(1000);
+	}
+}
+
 export async function run(argv = process.argv.slice(2)): Promise<void> {
   const { values } = parseArgs({ args: argv, options: OPTIONS, strict: true });
 
@@ -88,8 +104,14 @@ export async function run(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+	if (values['mostrar-totp']) {
+		await mostrarTotp(values['mostrar-totp']);
+		return;
+	}
+
   const usuario = values.usuario ?? process.env.EVO_USUARIO;
   const senha = values.senha ?? process.env.EVO_SENHA;
+	const segredoTotp = values['totp-secret'] ?? process.env.EVO_TOTP_SECRET;
   if (!usuario || !senha) {
     throw new Error(
       'Credenciais ausentes. Defina EVO_USUARIO e EVO_SENHA no .env ou use --usuario/--senha.',
@@ -125,7 +147,7 @@ export async function run(argv = process.argv.slice(2)): Promise<void> {
   page.setDefaultTimeout(timeout);
 
   try {
-    await login(page, { usuario, senha }, timeout);
+    await login(page, { usuario, senha, segredoTotp }, timeout);
     await escolherUnidade(page, unidade, timeout);
     await abrirNovoCadastro(page, timeout);
 

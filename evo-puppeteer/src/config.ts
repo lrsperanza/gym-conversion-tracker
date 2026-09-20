@@ -18,6 +18,12 @@ export const SELECTORS = {
     usuario: 'input#usuario',
     senha: 'input#senha',
     entrar: 'evo-button#entrar button',
+    /** A tela de 2FA tem um único campo, sem id fixo; o autocomplete é o que
+     * a identifica. Seletores mais largos casavam com campos do próprio login. */
+    otp: 'input[autocomplete="one-time-code"]',
+    /** O "Entrar" do 2FA é o botão amarrado ao formulário `evoFormDefault`;
+     * o do login é `evo-button#entrar`, então o atributo `form` separa os dois. */
+    otpConfirmar: 'button[form="evoFormDefault"]',
   },
   unidade: {
     modal: 'modal-login-multiunidade',

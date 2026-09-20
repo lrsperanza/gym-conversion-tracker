@@ -113,7 +113,12 @@ export const leadPatchSchema = z.object({
 
 export const evoCredentialsSchema = z.object({
 	username: z.string().email(),
-	password: z.string().min(1)
+	password: z.string().min(1),
+	totpSecret: z
+		.string()
+		.transform((value) => value.replace(/\s+/g, '').toUpperCase())
+		.pipe(z.union([z.literal(''), z.string().regex(/^[A-Z2-7]+=*$/)]))
+		.optional()
 });
 
 export const attendancePatchSchema = z.object({

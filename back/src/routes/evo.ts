@@ -6,7 +6,7 @@ import { assertCanAccessAcademy, requireAuth } from '../http/auth';
 import { AppError, notFound, unauthorized } from '../http/errors';
 import { evoCredentialsSchema } from '../http/schemas';
 import type { AppBindings, SessionUser } from '../http/types';
-import { decryptEvoPassword, encryptEvoPassword } from '../security/evoCrypto';
+import { decryptEvoPassword, decryptEvoTotpSecret, encryptEvoPassword, encryptEvoTotpSecret } from '../security/evoCrypto';
 import { createEvoPlansTicket, createEvoTicket, verifyEvoPlansTicket, verifyEvoTicket } from '../security/evoTicket';
 
 export const evoRoutes = new Hono<AppBindings>();
@@ -17,15 +17,18 @@ type PayloadUser =
 
 evoRoutes.get('/credentials', requireAuth, async (c) => {
 	const user = c.get('user');
-	const [row] = await sql<Array<{ evo_username: string | null; evo_password_encrypted: string | null }>>`
-		SELECT "evo_username", "evo_password_encrypted"
+	const [row] = await sql<
+		Array<{ evo_username: string | null; evo_password_encrypted: string | null; evo_totp_secret_encrypted: string | null }>
+	>`
+		SELECT "evo_username", "evo_password_encrypted", "evo_totp_secret_encrypted"
 		FROM "gym-conversion-tracker"."users"
 		WHERE "id" = ${user.id}
 	`;
 
 	return c.json({
 		configured: Boolean(row?.evo_username && row?.evo_password_encrypted),
-		username: row?.evo_username ?? null
+		username: row?.evo_username ?? null,
+		totpConfigured: Boolean(row?.evo_totp_secret_encrypted)
 	});
 });
 
@@ -33,18 +36,24 @@ evoRoutes.put('/credentials', requireAuth, async (c) => {
 	const user = c.get('user');
 	const input = evoCredentialsSchema.parse(await c.req.json());
 	const encryptedPassword = encryptEvoPassword(input.password);
+	const totpSecretProvided = input.totpSecret !== undefined;
+	const encryptedTotpSecret = input.totpSecret ? encryptEvoTotpSecret(input.totpSecret) : null;
 
-	const [updated] = await sql`
+	const [updated] = await sql<Array<{ evo_username: string; evo_totp_secret_encrypted: string | null }>>`
 		UPDATE "gym-conversion-tracker"."users"
 		SET "evo_username" = ${input.username},
 			"evo_password_encrypted" = ${encryptedPassword},
+			"evo_totp_secret_encrypted" = CASE
+				WHEN ${totpSecretProvided} THEN ${encryptedTotpSecret}
+				ELSE "evo_totp_secret_encrypted"
+			END,
 			"updated_at" = now()
 		WHERE "id" = ${user.id}
-		RETURNING "evo_username"
+		RETURNING "evo_username", "evo_totp_secret_encrypted"
 	`;
 	if (!updated) throw notFound('Usuário não encontrado.');
 
-	return c.json({ configured: true, username: input.username });
+	return c.json({ configured: true, username: input.username, totpConfigured: Boolean(updated.evo_totp_secret_encrypted) });
 });
 
 evoRoutes.delete('/credentials', requireAuth, async (c) => {
@@ -53,6 +62,7 @@ evoRoutes.delete('/credentials', requireAuth, async (c) => {
 		UPDATE "gym-conversion-tracker"."users"
 		SET "evo_username" = NULL,
 			"evo_password_encrypted" = NULL,
+			"evo_totp_secret_encrypted" = NULL,
 			"updated_at" = now()
 		WHERE "id" = ${user.id}
 	`;
@@ -89,9 +99,11 @@ evoRoutes.get('/plans/payload', async (c) => {
 			evo_unit_name: string | null;
 			evo_username: string | null;
 			evo_password_encrypted: string | null;
+			evo_totp_secret_encrypted: string | null;
 		}>
 	>`
-		SELECT ac."name" AS academy_name, ac."evo_unit_name", u."evo_username", u."evo_password_encrypted"
+		SELECT ac."name" AS academy_name, ac."evo_unit_name",
+			u."evo_username", u."evo_password_encrypted", u."evo_totp_secret_encrypted"
 		FROM "gym-conversion-tracker"."academies" ac
 		JOIN "gym-conversion-tracker"."users" u ON u."id" = ${ticketPayload.userId}
 		WHERE ac."id" = ${ticketPayload.academyId}
@@ -106,7 +118,8 @@ evoRoutes.get('/plans/payload', async (c) => {
 	return c.json({
 		credenciais: {
 			usuario: row.evo_username,
-			senha: decryptEvoPassword(row.evo_password_encrypted)
+			senha: decryptEvoPassword(row.evo_password_encrypted),
+			segredoTotp: row.evo_totp_secret_encrypted ? decryptEvoTotpSecret(row.evo_totp_secret_encrypted) : undefined
 		},
 		unidade: row.evo_unit_name || row.academy_name
 	});
@@ -137,6 +150,7 @@ evoRoutes.get('/attendances/:id/payload', async (c) => {
 			whatsapp_e164: string | null;
 			evo_username: string | null;
 			evo_password_encrypted: string | null;
+			evo_totp_secret_encrypted: string | null;
 		}>
 	>`
 		SELECT a."id", a."academy_id", a."receptionist_id",
@@ -146,7 +160,7 @@ evoRoutes.get('/attendances/:id/payload', async (c) => {
 			l."visit_type" AS lead_visit_type, l."how_found_us" AS lead_how_found_us,
 			l."email" AS lead_email, l."whatsapp_country_code", l."whatsapp_area_code",
 			l."whatsapp_number", l."whatsapp_e164",
-			u."evo_username", u."evo_password_encrypted"
+			u."evo_username", u."evo_password_encrypted", u."evo_totp_secret_encrypted"
 		FROM "gym-conversion-tracker"."attendances" a
 		JOIN "gym-conversion-tracker"."academies" ac ON ac."id" = a."academy_id"
 		JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
@@ -166,7 +180,10 @@ evoRoutes.get('/attendances/:id/payload', async (c) => {
 	return c.json({
 		credenciais: {
 			usuario: attendance.evo_username!,
-			senha: decryptEvoPassword(attendance.evo_password_encrypted!)
+			senha: decryptEvoPassword(attendance.evo_password_encrypted!),
+			segredoTotp: attendance.evo_totp_secret_encrypted
+				? decryptEvoTotpSecret(attendance.evo_totp_secret_encrypted)
+				: undefined
 		},
 		unidade: attendance.evo_unit_name || attendance.academy_name,
 		prospect: {

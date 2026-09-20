@@ -137,6 +137,7 @@ export type LossReason = {
 export type EvoCredentialsStatus = {
 	configured: boolean;
 	username: string | null;
+	totpConfigured: boolean;
 };
 
 export type EvoScrapedPlan = {

@@ -24,3 +24,4 @@ export {
 } from './flow.ts';
 export { listarContratosVenda, type ContratoVenda } from './vendas.ts';
 export { sleep } from './dom.ts';
+export { base32Decode, codigoTotpFresco, generateTotp, totpSecondsRemaining } from './totp.ts';

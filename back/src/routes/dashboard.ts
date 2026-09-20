@@ -30,13 +30,13 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			SELECT a.*
 			FROM "gym-conversion-tracker"."attendances" a
 			WHERE ${scope}
-		)
+		), valid_sales AS (${dedupedSalesSql()})
 		SELECT
 			COUNT(DISTINCT scoped."id")::int AS attendances,
 			COUNT(DISTINCT s."attendance_id")::int AS converted,
 			COALESCE(SUM(s."amount_cents"), 0)::int AS revenue_cents
 		FROM scoped
-		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = scoped."id"
+		LEFT JOIN valid_sales s ON s."attendance_id" = scoped."id"
 	`;
 
 	const receptionists = await sql`
@@ -44,7 +44,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			SELECT a.*
 			FROM "gym-conversion-tracker"."attendances" a
 			WHERE ${scope}
-		)
+		), valid_sales AS (${dedupedSalesSql()})
 		SELECT
 			u."id",
 			u."name",
@@ -53,7 +53,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			COALESCE(SUM(s."amount_cents"), 0)::int AS revenue_cents
 		FROM scoped
 		JOIN "gym-conversion-tracker"."users" u ON u."id" = scoped."receptionist_id"
-		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = scoped."id"
+		LEFT JOIN valid_sales s ON s."attendance_id" = scoped."id"
 		GROUP BY u."id", u."name"
 		ORDER BY revenue_cents DESC, converted DESC
 	`;
@@ -64,7 +64,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			FROM "gym-conversion-tracker"."attendances" a
 			WHERE a."professor_id" IS NOT NULL
 				AND ${scope}
-		)
+		), valid_sales AS (${dedupedSalesSql()})
 		SELECT
 			p."id",
 			p."name",
@@ -73,7 +73,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			COALESCE(SUM(s."amount_cents"), 0)::int AS revenue_cents
 		FROM scoped
 		JOIN "gym-conversion-tracker"."professors" p ON p."id" = scoped."professor_id"
-		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = scoped."id"
+		LEFT JOIN valid_sales s ON s."attendance_id" = scoped."id"
 		GROUP BY p."id", p."name"
 		ORDER BY converted DESC, revenue_cents DESC
 	`;
@@ -84,10 +84,10 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			FROM "gym-conversion-tracker"."attendances" a
 			WHERE a."professor_id" IS NOT NULL
 				AND ${scope}
-	), professor_global AS (
+	), valid_sales AS (${dedupedSalesSql()}), professor_global AS (
 		SELECT scoped."professor_id", COUNT(DISTINCT scoped."id")::float AS total, COUNT(DISTINCT s."attendance_id")::float AS converted
 		FROM scoped
-		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = scoped."id"
+		LEFT JOIN valid_sales s ON s."attendance_id" = scoped."id"
 		GROUP BY scoped."professor_id"
 	)
 		SELECT
@@ -101,7 +101,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 		JOIN "gym-conversion-tracker"."users" u ON u."id" = scoped."receptionist_id"
 		JOIN "gym-conversion-tracker"."professors" p ON p."id" = scoped."professor_id"
 		JOIN professor_global pg ON pg."professor_id" = scoped."professor_id"
-		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = scoped."id"
+		LEFT JOIN valid_sales s ON s."attendance_id" = scoped."id"
 		GROUP BY u."name", p."name", pg.total, pg.converted
 		ORDER BY revenue_cents DESC, converted DESC
 	`;
@@ -112,7 +112,7 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 			u."name",
 			COUNT(s."id")::int AS sales,
 			COALESCE(SUM(s."amount_cents"), 0)::int AS revenue_cents
-		FROM "gym-conversion-tracker"."sales" s
+		FROM (${dedupedSalesSql()}) s
 		JOIN "gym-conversion-tracker"."attendances" a ON a."id" = s."attendance_id"
 		JOIN "gym-conversion-tracker"."users" u ON u."id" = s."sold_by_user_id"
 		WHERE (${filters.academyId ?? null}::text IS NULL OR a."academy_id" = ${filters.academyId ?? null})
@@ -132,13 +132,14 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 	`;
 
 	const timeline = await sql`
+		WITH valid_sales AS (${dedupedSalesSql()})
 		SELECT
 			date_trunc('day', a."started_at" AT TIME ZONE 'America/Sao_Paulo')::date AS day,
 			COUNT(DISTINCT a."id")::int AS attendances,
 			COUNT(DISTINCT s."attendance_id")::int AS converted,
 			COALESCE(SUM(s."amount_cents"), 0)::int AS revenue_cents
 		FROM "gym-conversion-tracker"."attendances" a
-		LEFT JOIN "gym-conversion-tracker"."sales" s ON s."attendance_id" = a."id"
+		LEFT JOIN valid_sales s ON s."attendance_id" = a."id"
 		WHERE ${scope}
 		GROUP BY day
 		ORDER BY day
@@ -253,6 +254,19 @@ function scheduleScopeSql(filters: Pick<DashboardFilters, 'weekdays' | 'hourFrom
 		AND (${filters.weekdays ?? null}::text IS NULL OR EXTRACT(DOW FROM a."started_at" AT TIME ZONE 'America/Sao_Paulo')::int = ANY (string_to_array(${filters.weekdays ?? null}, ',')::int[]))
 		AND (${filters.hourFrom ?? null}::time IS NULL OR (a."started_at" AT TIME ZONE 'America/Sao_Paulo')::time >= ${filters.hourFrom ?? null}::time)
 		AND (${filters.hourTo ?? null}::time IS NULL OR (a."started_at" AT TIME ZONE 'America/Sao_Paulo')::time < (${filters.hourTo ?? null}::time + interval '1 minute'))
+	`;
+}
+
+// Duas vendas para o mesmo lead no mesmo dia são impossíveis no domínio — o mínimo
+// é uma perto da meia-noite e outra depois da 1h. Quando acontece (registro duplicado),
+// vale só a ÚLTIMA venda do dia (created_at em America/Sao_Paulo), que é a válida.
+function dedupedSalesSql() {
+	return sql`
+		SELECT DISTINCT ON (la."lead_id", (s."created_at" AT TIME ZONE 'America/Sao_Paulo')::date)
+			s.*
+		FROM "gym-conversion-tracker"."sales" s
+		JOIN "gym-conversion-tracker"."attendances" la ON la."id" = s."attendance_id"
+		ORDER BY la."lead_id", (s."created_at" AT TIME ZONE 'America/Sao_Paulo')::date, s."created_at" DESC
 	`;
 }
 

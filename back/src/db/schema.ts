@@ -140,6 +140,7 @@ export const users = gym.table(
 		passwordHash: text('password_hash').notNull(),
 		evoUsername: text('evo_username'),
 		evoPasswordEncrypted: text('evo_password_encrypted'),
+		evoTotpSecretEncrypted: text('evo_totp_secret_encrypted'),
 		emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
 		active: boolean('active').notNull().default(true),
 		photoMime: text('photo_mime'),

@@ -23,6 +23,7 @@ import {
   waitFor,
   waitMatPanelClosed,
 } from './dom.ts';
+import { codigoTotpFresco } from './totp.ts';
 
 /** Depois disso, seguir na tela de login significa credencial recusada. */
 const GRACA_LOGIN_MS = 12_000;
@@ -79,14 +80,18 @@ export async function gotoComRetry(page: Page, url: string, timeout: number): Pr
   throw lastError instanceof Error ? lastError : new Error(`Não foi possível abrir ${url}.`);
 }
 
-export type Credenciais = { usuario: string; senha: string };
-type EstadoSessao = 'login' | 'unidade' | 'ativa';
+export type Credenciais = { usuario: string; senha: string; segredoTotp?: string };
+type EstadoSessao = 'login' | 'unidade' | 'ativa' | 'totp';
 
 export async function login(page: Page, credenciais: Credenciais, timeout: number): Promise<void> {
   log(`abrindo ${LOGIN_URL}`);
   await gotoComRetry(page, LOGIN_URL, timeout);
 
   const estado = await detectarEstadoSessao(page, timeout);
+  if (estado === 'totp') {
+    await preencherTotpAteRedirecionar(page, credenciais, timeout);
+    return;
+  }
   if (estado !== 'login') {
     log('sessão EVO já está ativa — pulando login');
     return;
@@ -120,6 +125,16 @@ export async function garantirSessao(
 	if (estado === 'ativa') {
 		log('sessão EVO já está ativa — pulando login');
 		return;
+	}
+
+	if (estado === 'totp') {
+		const destino = await preencherTotpAteRedirecionar(page, credenciais, timeout);
+		if (destino === 'ativa') return;
+		if (destino === 'unidade') {
+			await escolherUnidade(page, unidade, timeout);
+			await aguardarSessaoAtiva(page, timeout);
+			return;
+		}
 	}
 
 	if (estado === 'unidade') {
@@ -156,6 +171,9 @@ async function preencherLoginAteRedirecionar(
 	timeout: number,
 ): Promise<DestinoSessao> {
 	let observando = true;
+	// O 2FA só aparece depois do clique em "Entrar", então o observador não
+	// olha para ele: disparar o preenchimento do código enquanto o usuário
+	// ainda está sendo digitado faria os dois competirem pelo mesmo teclado.
 	const redirecionamento = (async (): Promise<DestinoSessao> => {
 		while (observando) {
 			checarCancelamento(page);
@@ -170,7 +188,7 @@ async function preencherLoginAteRedirecionar(
 		await fill(page, SELECTORS.login.usuario, credenciais.usuario, timeout);
 		await fill(page, SELECTORS.login.senha, credenciais.senha, timeout);
 		await click(page, SELECTORS.login.entrar, timeout);
-		return 'entrou';
+		return aguardarDestinoAposLogin(page, credenciais, timeout);
 	})();
 	// O lado abandonado pelo redirect morre no próprio prazo; engolir o
 	// desfecho para não derrubar o processo com rejeição sem tratamento.
@@ -181,6 +199,128 @@ async function preencherLoginAteRedirecionar(
 	} finally {
 		observando = false;
 	}
+}
+
+/**
+ * Depois do clique em "Entrar" o EVO pode ir para a home, para o modal de
+ * unidades, para a tela de código 2FA, ou ficar no login (credencial recusada).
+ */
+async function aguardarDestinoAposLogin(
+	page: Page,
+	credenciais: Credenciais,
+	timeout: number,
+): Promise<DestinoSessao> {
+	const deadline = Date.now() + timeout;
+	const limiteLogin = Date.now() + Math.min(GRACA_LOGIN_MS, timeout);
+	const avisar = aviso('o EVO concluir o login');
+
+	while (Date.now() < deadline) {
+		checarCancelamento(page);
+		if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
+		if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
+		if (await telaTotpVisivel(page)) {
+			return preencherTotpAteRedirecionar(page, credenciais, remaining(deadline));
+		}
+		if (Date.now() > limiteLogin && (await visivel(page, SELECTORS.login.usuario))) return 'entrou';
+		avisar();
+		await sleep(POLL_INTERVAL);
+	}
+
+	return 'entrou';
+}
+
+/**
+ * A tela de 2FA substitui o formulário de login. Exigir que o campo de usuário
+ * tenha sumido evita confundir um campo qualquer do login com o do código —
+ * foi isso que fazia o código ser digitado por cima do e-mail.
+ */
+async function telaTotpVisivel(page: Page): Promise<boolean> {
+	if (!(await visivel(page, SELECTORS.login.otp))) return false;
+	return !(await visivel(page, SELECTORS.login.usuario));
+}
+
+async function preencherTotpAteRedirecionar(
+	page: Page,
+	credenciais: Credenciais,
+	timeout: number,
+): Promise<DestinoSessao> {
+	await preencherTotp(page, credenciais, timeout);
+	const deadline = Date.now() + timeout;
+	const avisar = aviso('o EVO validar o código 2FA');
+
+	while (Date.now() < deadline) {
+		checarCancelamento(page);
+		if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
+		if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
+		if (await visivel(page, SELECTORS.login.usuario)) return 'entrou';
+		avisar();
+		await sleep(POLL_INTERVAL);
+	}
+
+	return 'entrou';
+}
+
+async function preencherTotp(page: Page, credenciais: Credenciais, timeout: number): Promise<void> {
+	if (!credenciais.segredoTotp?.trim()) {
+		throw new Error('O EVO pediu o código de verificação em duas etapas, mas nenhuma chave 2FA está cadastrada em Conta.');
+	}
+
+	log('gerando código 2FA do EVO');
+	const codigo = await codigoTotpFresco(credenciais.segredoTotp);
+	await fill(page, SELECTORS.login.otp, codigo, timeout);
+	log('confirmando o código 2FA');
+	await clicarEntrarTotp(page, timeout).catch(async () => {
+		log('botão Entrar do 2FA não encontrado — enviando com Enter');
+		await page.keyboard.press('Enter');
+	});
+}
+
+async function clicarEntrarTotp(page: Page, timeout: number): Promise<void> {
+	if (await marcarBotaoEntrarTotp(page, Math.min(timeout, CLIQUE_MS))) {
+		await clickMarked(page, timeout);
+		return;
+	}
+
+	await click(page, SELECTORS.login.otpConfirmar, Math.min(timeout, CLIQUE_MS));
+}
+
+/**
+ * Só o botão amarrado ao formulário do 2FA serve: o "Entrar" do login tem o
+ * mesmo texto e a mesma classe `evo-button`, mas vive em `evo-button#entrar`.
+ */
+async function marcarBotaoEntrarTotp(page: Page, timeout: number): Promise<boolean> {
+	const deadline = Date.now() + timeout;
+	const avisar = aviso('o botão Entrar do 2FA');
+
+	while (Date.now() < deadline) {
+		checarCancelamento(page);
+		const marcado = await page
+			.evaluate((marker, seletorLoginEntrar) => {
+				const botoes = Array.from(document.querySelectorAll<HTMLButtonElement>('button[form="evoFormDefault"]'));
+				const alvo = botoes.find((element) => {
+					if (element.closest(seletorLoginEntrar)) return false;
+					const style = window.getComputedStyle(element);
+					const texto = element.textContent?.replace(/\s+/g, ' ').trim().toLowerCase();
+					const visivel =
+						style.visibility !== 'hidden' && style.display !== 'none' && element.getClientRects().length > 0;
+					return visivel && !element.disabled && texto === 'entrar';
+				});
+				if (!alvo) return false;
+				alvo.setAttribute(marker, '');
+				return true;
+			}, MARKER, SELECTORS.login.entrar.split(' ')[0]!)
+			.catch(() => false);
+
+		if (marcado) return true;
+		avisar();
+		await sleep(POLL_INTERVAL);
+	}
+
+	return false;
+}
+
+function remaining(deadline: number): number {
+	return Math.max(deadline - Date.now(), 500);
 }
 
 /**
@@ -198,6 +338,7 @@ async function detectarEstadoSessao(page: Page, timeout: number): Promise<Estado
 		checarCancelamento(page);
 		if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
 		if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
+		if (await telaTotpVisivel(page)) return 'totp';
 		if (Date.now() > limiteLogin && (await visivel(page, SELECTORS.login.usuario))) return 'login';
 		avisar();
 		await sleep(POLL_INTERVAL);

@@ -21,6 +21,7 @@ export type EvoPayload = {
 	credenciais: {
 		usuario: string;
 		senha: string;
+		segredoTotp?: string;
 	};
 	unidade: string;
 	prospect: Prospect;
@@ -30,6 +31,7 @@ export type EvoPlansPayload = {
 	credenciais: {
 		usuario: string;
 		senha: string;
+		segredoTotp?: string;
 	};
 	unidade: string;
 };

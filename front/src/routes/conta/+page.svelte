@@ -15,7 +15,7 @@
 	let evoLoading = $state(true);
 	let evoBusy = $state(false);
 	let evoCredentials = $state<EvoCredentialsStatus | null>(null);
-	let evoCredentialsForm = $state({ username: '', password: '' });
+	let evoCredentialsForm = $state({ username: '', password: '', totpSecret: '' });
 
 	onMount(() => {
 		void loadEvoIntegration();
@@ -103,6 +103,7 @@
 			});
 			evoCredentials = credentials;
 			evoCredentialsForm.password = '';
+			evoCredentialsForm.totpSecret = '';
 			accountMessage = 'Credenciais EVO salvas.';
 		} catch (error) {
 			accountMessage = errorMessage(error);
@@ -137,8 +138,9 @@
 		evoBusy = true;
 		try {
 			await api<{ ok: boolean }>('/api/evo/credentials', { method: 'DELETE' });
-			evoCredentials = { configured: false, username: null };
+			evoCredentials = { configured: false, username: null, totpConfigured: false };
 			evoCredentialsForm.password = '';
+			evoCredentialsForm.totpSecret = '';
 			accountMessage = 'Credenciais EVO removidas.';
 		} catch (error) {
 			accountMessage = errorMessage(error);
@@ -260,6 +262,9 @@
 			>
 				{#if evoCredentials?.configured}
 					Credenciais configuradas para {evoCredentials.username}.
+					<span class="block">
+						{evoCredentials.totpConfigured ? '2FA configurado.' : '2FA não configurado.'}
+					</span>
 				{:else}
 					Credenciais EVO ainda não configuradas.
 				{/if}
@@ -282,6 +287,20 @@
 						disabled={evoBusy}
 						required
 					/></label
+				>
+				<label class="text-sm font-medium text-slate-700 sm:col-span-2"
+					>Chave de autenticação (2FA)<input
+						class="mt-1 w-full rounded-2xl border-slate-300"
+						type="password"
+						autocomplete="off"
+						spellcheck="false"
+						bind:value={evoCredentialsForm.totpSecret}
+						disabled={evoBusy}
+					/>
+					<span class="mt-1 block text-xs font-normal text-slate-500">
+						Cole a chave exibida pelo EVO ao ativar o app autenticador. Deixe em branco para
+						remover.
+					</span></label
 				>
 				<button
 					class="rounded-2xl bg-sky-600 px-4 py-3 font-bold text-white disabled:opacity-60 sm:col-span-2"
