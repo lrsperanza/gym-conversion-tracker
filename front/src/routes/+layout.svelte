@@ -7,15 +7,18 @@
 	import { getBridgeBaseUrl } from '$lib/api/bridge';
 	import { ApiError, api } from '$lib/api/client';
 	import { fetchDesktopAppInfo } from '$lib/api/desktop';
+	import { start as startAudioRecorder, stop as stopAudioRecorder } from '$lib/audio/recorder.svelte';
+	import { startAudioUploader, stopAudioUploader } from '$lib/audio/uploader';
 	import { canAccessAdmin, canAccessDashboard } from '$lib/auth/roles';
 	import ApiHostBadge from '$lib/components/ApiHostBadge.svelte';
+	import AudioStatusBadge from '$lib/components/AudioStatusBadge.svelte';
 	import DesktopUpdate from '$lib/components/DesktopUpdate.svelte';
 	import EvoBridgeDiagnostics from '$lib/components/EvoBridgeDiagnostics.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage } from '$lib/helpers';
 	import { setSessionContext, type SessionState } from '$lib/session';
 	import type { User } from '$lib/types';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 
 	type NavHref = '/atendimento' | '/leads' | '/dashboard' | '/administracao' | '/conta';
 	type NavLink = { href: NavHref; label: string };
@@ -68,6 +71,25 @@
 		if (!document.title.endsWith(suffix)) {
 			document.title = `${document.title}${suffix}`;
 		}
+	});
+
+	// Only the user id may drive this effect: the recorder reads and writes its own
+	// reactive state, and tracking it here restarts the microphone in a loop.
+	let audioUserId = $derived(session.user?.id ?? null);
+
+	$effect(() => {
+		if (!audioUserId) return;
+		untrack(() => {
+			const user = session.user;
+			if (!user) return;
+			void startAudioRecorder(user);
+			startAudioUploader(user.id);
+		});
+
+		return () => {
+			stopAudioRecorder();
+			stopAudioUploader();
+		};
 	});
 
 	async function loadDesktopVersion() {
@@ -133,6 +155,8 @@
 		} catch {
 			/* Session cleanup in the UI still matters if the cookie is already invalid. */
 		}
+		stopAudioRecorder();
+		stopAudioUploader();
 		session.user = null;
 		await goto(resolve('/atendimento'));
 	}
@@ -253,7 +277,8 @@
 						</a>
 					{/each}
 				</nav>
-				<div class="flex items-center gap-3 text-sm text-slate-600">
+				<div class="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+					<AudioStatusBadge />
 					<span>{session.user.name}</span>
 					<button
 						class="rounded-2xl border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50"

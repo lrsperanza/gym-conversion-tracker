@@ -56,15 +56,19 @@ Em `EventFormModal.svelte`: grava o evento pela API → pede `POST /api/evo/atte
 
 `src/lib/api/evo-log.svelte.ts` é um store de runes em módulo (`$state`) persistido em `skyfit:evo-log`, exibido por `EvoBridgeDiagnostics.svelte`.
 
+## Áudio local
+
+`src/lib/audio/` grava o microfone com `MediaRecorder` sempre que há sessão. No desktop o WebView2 libera o microfone sozinho para `localhost:4000`; no navegador comum aparece o prompt nativo de permissão, e se for negado o `AudioStatusBadge` vira botão de "Tentar de novo". `recorder.svelte.ts` mantém o estado global com runes, `buffer.ts` guarda chunks WebM/Opus no IndexedDB `skyfit-audio`, e `uploader.ts` consulta `GET /api/audio/pending?deviceId=` e envia multipart para `POST /api/attendances/:id/audio`. O cliente não decide janelas de recorte: usa apenas o que o back pedir. `AudioReviewModal.svelte` mostra as partes salvas e eventos do atendimento.
+
 ## Estado
 
 Runes em tudo: `$state`, `$state.raw` para coleções trocadas por inteiro, `$derived`/`$derived.by`, `$effect`, `$props`. Sessão global no `+layout.svelte` raiz, distribuída por `createContext` em `src/lib/session.ts` (`getSessionContext`/`setSessionContext`, com `loadSession`/`logout`). Não há biblioteca de store nem writables clássicos.
 
-Chaves de `localStorage`: `skyfit:api-host`, `skyfit:evo-log`, `attendance-quick-draft`.
+Chaves de `localStorage`: `skyfit:api-host`, `skyfit:evo-log`, `attendance-quick-draft`, `skyfit:audio-device-id`, `skyfit:audio-device`, `skyfit:audio-device-label`.
 
 ## Tipos
 
-`src/lib/types.ts` espelha `back/src/db/schema.ts` **à mão** — não há pacote compartilhado. Mudou o schema no back? Atualize aqui. Contém `Role`, `User`, `Academy`, `Professor`, `AttendanceEventType`, `LeadEvent`, `Attendance`, `LeadSummary`, `OutcomeType`, `LossReason`, `EvoCredentialsStatus`, `EvoJobStatus`, `DashboardSummary`, `MetricRow`.
+`src/lib/types.ts` espelha `back/src/db/schema.ts` **à mão** — não há pacote compartilhado. Mudou o schema no back? Atualize aqui. Contém `Role`, `User`, `Academy`, `Professor`, `AttendanceEventType`, `LeadEvent`, `Attendance`, `LeadSummary`, `OutcomeType`, `LossReason`, `EvoCredentialsStatus`, `EvoJobStatus`, `AttendanceAudioPart`, `AudioConfig`, `AudioPendingPart`, `DashboardSummary`, `MetricRow`.
 
 ## UI
 

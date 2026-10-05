@@ -28,9 +28,9 @@ Bootstrap do zero: `.env` → `db:migrate` → `db:seed` → `bootstrap:admin` �
 | `src/db/` | `client.ts` (postgres.js), `schema.ts` (canônico), `migrate.ts`, `seed.ts` |
 | `src/domain/` | `normalize.ts` (nome/email/telefone), `outcomeTypeKey.ts` + testes |
 | `src/http/` | `auth.ts` (middleware + RBAC), `errors.ts`, `schemas.ts` (Zod), `types.ts` |
-| `src/routes/` | `auth.ts`, `admin.ts`, `attendances.ts`, `dashboard.ts`, `evo.ts`, `desktop.ts` |
+| `src/routes/` | `auth.ts`, `admin.ts`, `attendances.ts`, `audio.ts`, `dashboard.ts`, `evo.ts`, `desktop.ts` |
 | `src/security/` | `crypto.ts`, `evoCrypto.ts` (AES-GCM), `evoTicket.ts` (HMAC) |
-| `src/services/` | `audit.ts`, `azureBlob.ts`, `emailTokens.ts`, `mail.ts` |
+| `src/services/` | `audit.ts`, `azureBlob.ts`, `emailTokens.ts`, `mail.ts`, `audio/`, `video/` |
 | `src/scripts/` | `bootstrap-admin.ts`, `publish-desktop.ts` |
 | `drizzle/` | Migrations `.sql` numeradas |
 
@@ -55,6 +55,7 @@ app.route('/api/auth', authRoutes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/evo', evoRoutes);
 app.route('/api/desktop', desktopRoutes);
+app.route('/api', audioRoutes);
 app.route('/api', attendanceRoutes);   // leads + attendances
 app.route('/api', dashboardRoutes);
 ```
@@ -90,6 +91,7 @@ O back não fala com o EVO por HTTP; a automação é do `evo-bridge` + `evo-pup
 ## Integrações
 
 - **Azure Blob** (`src/services/azureBlob.ts`): distribuição do desktop. REST puro com assinatura Shared Key/SAS, sem SDK. `listBlobs`, `blobDownloadUrl`, `uploadBlob`. Blobs nomeados `{DESKTOP_BUILD_PREFIX}{semver}.exe`.
+- **Áudio de atendimento:** front/desktop grava o microfone localmente e envia partes para `POST /api/attendances/:id/audio`; o back valida a janela, concatena/corta com ffmpeg em `src/services/audio/clip.ts` e salva no Azure Blob privado (`AUDIO_BLOB_CONTAINER`). `GET /api/audio/pending` é a fonte de verdade do que deve subir.
 - **SMTP AWS SES** via Nodemailer (`src/services/mail.ts`). Sem `AWS_SMTP_FROM_EMAIL` o envio lança 503.
 - **Cloud Run** para deploy. Nenhum outro SDK GCP no código.
 
@@ -97,7 +99,7 @@ O back não fala com o EVO por HTTP; a automação é do `evo-bridge` + `evo-pup
 
 Tudo é lido em `src/config/env.ts` (Zod, a partir de `Bun.env`):
 
-`PostgreHost`, `PostgrePort`, `PostgreDatabase`, `PostgreUser`, `PostgrePassword`, `PostgreSSL`, `PORT`, `API_PORT`, `CORS_ORIGIN`, `APP_URL`, `AWS_SMTP_HOST`, `AWS_SMTP_PORT`, `AWS_SMTP_USERNAME`, `AWS_SMTP_PASSWORD`, `AWS_SMTP_FROM_EMAIL`, `AWS_SMTP_FROM_NAME`, `EVO_CRED_KEY` (base64 de 32 bytes), `EVO_TICKET_KEY`, `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY`, `DESKTOP_BLOB_CONTAINER`, `DESKTOP_BUILD_PREFIX`.
+`PostgreHost`, `PostgrePort`, `PostgreDatabase`, `PostgreUser`, `PostgrePassword`, `PostgreSSL`, `PORT`, `API_PORT`, `CORS_ORIGIN`, `APP_URL`, `AWS_SMTP_HOST`, `AWS_SMTP_PORT`, `AWS_SMTP_USERNAME`, `AWS_SMTP_PASSWORD`, `AWS_SMTP_FROM_EMAIL`, `AWS_SMTP_FROM_NAME`, `EVO_CRED_KEY` (base64 de 32 bytes), `EVO_TICKET_KEY`, `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY`, `DESKTOP_BLOB_CONTAINER`, `DESKTOP_BUILD_PREFIX`, `AUDIO_ENABLED`, `AUDIO_BUFFER_MINUTES`, `AUDIO_CLIP_MINUTES`, `AUDIO_BLOB_CONTAINER`, `AUDIO_CHUNK_SECONDS`.
 
 `PORT` (injetado pelo Cloud Run) tem prioridade sobre `API_PORT`. `DB_SCHEMA` é constante, não env. O `.env.example` está incompleto: faltam `PostgreSSL`, `PORT` e `EVO_TICKET_KEY`.
 
@@ -113,6 +115,7 @@ Tudo é lido em `src/config/env.ts` (Zod, a partir de `Bun.env`):
 - **`attendance_events` é append-only** — não existe rota de update/delete.
 - **Soft delete é flag `active`**, não `deleted_at`. Troca de role desativa as linhas antigas e insere novas.
 - `started_at` é definido pelo servidor no create; não há como retroagir por API.
+- Áudio auditável segue a regra: até `AUDIO_CLIP_MINUTES`, salva `FULL`; acima disso, salva `HEAD` e `TAIL` sem sobreposição. `HEAD` fica pendente assim que vence a janela, antes do fechamento. Todo usuário grava localmente, mas só sobe quem participou: `HEAD` vai para quem abriu (ator do primeiro `TOUR_*`, com fallback em `receptionist_id`), `TAIL` para quem fechou (ator do último `CLOSE`) e `FULL` para qualquer um dos dois — o primeiro upload vence, o outro recebe 409.
 - `presenter = 'PROFESSOR'` exige `professorId`.
 - A lista de atendimentos esconde `FINALIZED` por padrão, a menos que venha `?status=`.
 - Cancelamento de agendamento é um evento `SCHEDULE_CANCELLED` posterior (ordenado por `created_at`), não a remoção do agendamento.

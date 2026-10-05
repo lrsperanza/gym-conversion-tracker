@@ -2,6 +2,13 @@
 	import { api } from '$lib/api/client';
 	import { evoApi, evoAvailable } from '$lib/api/evo';
 	import { describeError, evoError, evoLog, openEvoDiagnostics } from '$lib/api/evo-log.svelte';
+	import { getSelectedAudioInputDeviceId } from '$lib/audio/buffer';
+	import {
+		audioRecorderState,
+		loadDevices,
+		setDevice,
+		syncConfig
+	} from '$lib/audio/recorder.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage } from '$lib/helpers';
 	import type { EvoCredentialsStatus } from '$lib/types';
@@ -16,10 +23,45 @@
 	let evoBusy = $state(false);
 	let evoCredentials = $state<EvoCredentialsStatus | null>(null);
 	let evoCredentialsForm = $state({ username: '', password: '', totpSecret: '' });
+	let audioLoading = $state(false);
+	let selectedAudioDeviceId = $state('');
 
 	onMount(() => {
 		void loadEvoIntegration();
+		void loadAudioDevices();
+		void syncConfig();
 	});
+
+	async function loadAudioDevices() {
+		audioLoading = true;
+		selectedAudioDeviceId = getSelectedAudioInputDeviceId();
+		try {
+			await loadDevices();
+			selectedAudioDeviceId = getSelectedAudioInputDeviceId();
+		} finally {
+			audioLoading = false;
+		}
+	}
+
+	async function changeAudioDevice(event: Event) {
+		const target = event.currentTarget as HTMLSelectElement;
+		selectedAudioDeviceId = target.value;
+		await setDevice(selectedAudioDeviceId);
+		accountMessage = 'Microfone de captura salvo.';
+	}
+
+	function audioStatusLabel(status: string) {
+		const labels: Record<string, string> = {
+			recording: 'gravando',
+			starting: 'iniciando',
+			stopping: 'parando',
+			disabled: 'desativado',
+			unsupported: 'indisponível',
+			error: 'erro',
+			idle: 'parado'
+		};
+		return labels[status] ?? status;
+	}
 
 	async function loadEvoIntegration() {
 		evoLoading = true;
@@ -216,6 +258,59 @@
 			>Confirmar</button
 		>
 	</form>
+	<section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200 lg:col-span-3">
+		<div class="flex flex-wrap items-start justify-between gap-3">
+			<div>
+				<h3 class="font-bold text-slate-950">Áudio local</h3>
+				<p class="text-sm text-slate-600">
+					Escolha o microfone usado pelo app desktop para guardar trechos locais dos atendimentos.
+				</p>
+			</div>
+			<button
+				type="button"
+				class="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+				onclick={loadAudioDevices}
+				disabled={audioLoading}
+			>
+				{audioLoading ? 'Atualizando...' : 'Atualizar microfones'}
+			</button>
+		</div>
+
+		<div class="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(16rem,0.7fr)]">
+			<label class="text-sm font-medium text-slate-700">
+				Microfone
+				<select
+					class="mt-1 w-full rounded-2xl border-slate-300"
+					value={selectedAudioDeviceId}
+					onchange={changeAudioDevice}
+					disabled={audioLoading}
+				>
+					<option value="">Padrão do navegador</option>
+					{#each audioRecorderState.devices as device (device.deviceId)}
+						<option value={device.deviceId}>{device.label}</option>
+					{/each}
+				</select>
+			</label>
+			<div class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+				<p>
+					Status:
+					<span class="font-bold text-slate-900">{audioStatusLabel(audioRecorderState.status)}</span>
+				</p>
+				<p class="mt-1">
+					{audioRecorderState.message || 'A captura inicia automaticamente no app desktop após login.'}
+				</p>
+				{#if audioRecorderState.config}
+					<p class="mt-1 text-xs">
+						Buffer: {audioRecorderState.config.bufferMinutes} min · chunks de
+						{audioRecorderState.config.chunkSeconds}s
+					</p>
+				{/if}
+				{#if audioRecorderState.error}
+					<p class="mt-2 text-xs font-semibold text-red-700">{audioRecorderState.error}</p>
+				{/if}
+			</div>
+		</div>
+	</section>
 	<section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200 lg:col-span-3">
 		<div class="flex flex-wrap items-start justify-between gap-3">
 			<div>

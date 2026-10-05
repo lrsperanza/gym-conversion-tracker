@@ -4,6 +4,7 @@
 	import { errorMessage, eventToneClass, eventTypeLabel, isScheduledEventType } from '$lib/helpers';
 	import { getSessionContext } from '$lib/session';
 	import type { LeadEvent } from '$lib/types';
+	import AudioReviewModal from './AudioReviewModal.svelte';
 	import ClipReviewModal from './ClipReviewModal.svelte';
 
 	let {
@@ -20,9 +21,11 @@
 
 	/** Nestes tipos a descrição é gerada pelo backend e só repete o rótulo do evento. */
 	const GENERATED_DESCRIPTION: string[] = ['SALE', 'TOUR_RECEPTIONIST', 'TOUR_PROFESSOR'];
+	const AUDIO_REVIEW_EVENT_TYPES: string[] = ['SALE', 'LOSS', 'CLOSE'];
 
 	let open = $state(false);
 	let reviewEvent = $state<LeadEvent | null>(null);
+	let audioReviewEvent = $state<LeadEvent | null>(null);
 	let canReviewClips = $derived(!isReceptionistOnly(session.user));
 
 	/** Muda quando o lead troca ou quando um evento novo é registrado, forçando recarga. */
@@ -32,6 +35,10 @@
 	async function fetchEvents() {
 		const data = await api<{ events: LeadEvent[] }>(`/api/leads/${leadId}/events`);
 		return data.events;
+	}
+
+	function canReviewAudioEvent(event: LeadEvent) {
+		return AUDIO_REVIEW_EVENT_TYPES.includes(event.type);
 	}
 </script>
 
@@ -85,6 +92,15 @@
 											cancelado depois
 										</span>
 									{/if}
+									{#if canReviewClips && canReviewAudioEvent(event)}
+										<button
+											type="button"
+											class="rounded-full border border-sky-200 px-2.5 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-50"
+											onclick={() => (audioReviewEvent = event)}
+										>
+											Áudio
+										</button>
+									{/if}
 								</div>
 								{#if isScheduledEventType(event.type) && event.scheduled_for}
 									<p
@@ -134,5 +150,6 @@
 
 	{#if canReviewClips}
 		<ClipReviewModal event={reviewEvent} onClose={() => (reviewEvent = null)} />
+		<AudioReviewModal event={audioReviewEvent} onClose={() => (audioReviewEvent = null)} />
 	{/if}
 </div>

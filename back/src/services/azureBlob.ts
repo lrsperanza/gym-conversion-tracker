@@ -51,6 +51,33 @@ export async function blobDownloadUrl(container: string, blobName: string, ttlSe
 	return url.toString();
 }
 
+const ensuredContainers = new Set<string>();
+
+/**
+ * Creates a private container if it does not exist yet. Container creation is not
+ * allowed with a service SAS, so this one operation signs an account SAS instead.
+ */
+export async function ensureContainer(container: string) {
+	if (ensuredContainers.has(container)) return;
+
+	const sas = await signAccountSas({ resourceTypes: 'c', permissions: 'c', ttlSeconds: 5 * 60 });
+	const url = new URL(`${accountUrl()}/${encodeURIComponent(container)}`);
+	url.search = sas;
+	url.searchParams.set('restype', 'container');
+
+	const response = await fetch(url, {
+		method: 'PUT',
+		headers: { 'x-ms-version': SERVICE_VERSION }
+	});
+	if (response.ok || response.status === 409) {
+		ensuredContainers.add(container);
+		return;
+	}
+
+	const detail = await response.text();
+	throw new Error(`Azure respondeu HTTP ${response.status} ao criar container "${container}": ${detail.slice(0, 300)}`);
+}
+
 /** Overwrites the blob if it already exists. Metadata keys must be valid Azure names (letters/digits). */
 export async function uploadBlob(
 	container: string,
@@ -136,6 +163,48 @@ async function signServiceSas({ resource, canonicalizedResource, permissions, tt
 		se: expiry,
 		sr: resource,
 		sp: permissions,
+		spr: 'https',
+		sig: await hmacSha256Base64(env.azure.accountKey, stringToSign)
+	});
+
+	return params.toString();
+}
+
+type AccountSasInput = {
+	/** s = service, c = container, o = object */
+	resourceTypes: string;
+	permissions: string;
+	ttlSeconds: number;
+};
+
+async function signAccountSas({ resourceTypes, permissions, ttlSeconds }: AccountSasInput) {
+	if (!azureStorageConfigured()) throw new Error('Azure Storage não está configurado.');
+
+	const start = isoSeconds(new Date(Date.now() - 5 * 60_000));
+	const expiry = isoSeconds(new Date(Date.now() + ttlSeconds * 1000));
+	const services = 'b';
+	// Since version 2020-12-06 the account SAS string ends with the encryption scope
+	// field, which leaves a trailing newline after it.
+	const stringToSign = [
+		env.azure.accountName,
+		permissions,
+		services,
+		resourceTypes,
+		start,
+		expiry,
+		'', // signed IP
+		'https',
+		SERVICE_VERSION,
+		'' // encryption scope
+	].join('\n') + '\n';
+
+	const params = new URLSearchParams({
+		sv: SERVICE_VERSION,
+		ss: services,
+		srt: resourceTypes,
+		sp: permissions,
+		st: start,
+		se: expiry,
 		spr: 'https',
 		sig: await hmacSha256Base64(env.azure.accountKey, stringToSign)
 	});

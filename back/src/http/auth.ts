@@ -138,3 +138,8 @@ export function canManageProfessor(actor: SessionUser, academyId: string, action
 	return hasAnyRole(actor, ['ADMIN', 'SOCIO', 'GERENTE_REGIONAL', 'LIDER']);
 }
 
+export function canListenAudio(actor: SessionUser, academyId: string) {
+	if (!canAccessAcademy(actor, academyId)) return false;
+	return hasAnyRole(actor, ['ADMIN', 'SOCIO', 'GERENTE_REGIONAL', 'LIDER']);
+}
+

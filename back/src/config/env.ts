@@ -28,6 +28,14 @@ const rawEnvSchema = z.object({
 	CAMERA_CLIP_MAX_MINUTES: z.coerce.number().int().positive().default(15),
 	CAMERA_MAX_CONCURRENT: z.coerce.number().int().positive().default(2),
 	GYM_TIMEZONE: z.string().default('America/Sao_Paulo'),
+	AUDIO_ENABLED: z
+		.enum(['true', 'false'])
+		.default('true')
+		.transform((value) => value === 'true'),
+	AUDIO_BUFFER_MINUTES: z.coerce.number().int().positive().default(180),
+	AUDIO_CLIP_MINUTES: z.coerce.number().int().positive().default(10),
+	AUDIO_BLOB_CONTAINER: z.string().default('attendance-audio'),
+	AUDIO_CHUNK_SECONDS: z.coerce.number().int().positive().default(60),
 	AZURE_STORAGE_ACCOUNT_NAME: z.string().default(''),
 	AZURE_STORAGE_ACCOUNT_KEY: z.string().default(''),
 	DESKTOP_BLOB_CONTAINER: z.string().default('personal'),
@@ -69,6 +77,13 @@ export const env = {
 		clipMaxMinutes: parsed.CAMERA_CLIP_MAX_MINUTES,
 		maxConcurrent: parsed.CAMERA_MAX_CONCURRENT,
 		timeZone: parsed.GYM_TIMEZONE
+	},
+	audio: {
+		enabled: parsed.AUDIO_ENABLED,
+		bufferMinutes: parsed.AUDIO_BUFFER_MINUTES,
+		clipMinutes: parsed.AUDIO_CLIP_MINUTES,
+		container: parsed.AUDIO_BLOB_CONTAINER,
+		chunkSeconds: parsed.AUDIO_CHUNK_SECONDS
 	},
 	azure: {
 		accountName: parsed.AZURE_STORAGE_ACCOUNT_NAME,

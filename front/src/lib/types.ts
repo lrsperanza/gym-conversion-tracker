@@ -225,6 +225,73 @@ export type ClipJob = {
 	expiresAt: string;
 };
 
+export type AudioPart = 'FULL' | 'HEAD' | 'TAIL';
+
+export type AudioPartStatus = 'UPLOADED' | 'MISSING';
+
+export type TranscriptionStatus = 'NOT_REQUESTED' | 'QUEUED' | 'PROCESSING' | 'DONE' | 'FAILED';
+
+export type AudioGap = {
+	start: string;
+	end: string;
+	seconds: number;
+};
+
+export type AudioParticipant = {
+	id?: string | null;
+	name?: string | null;
+	role: 'lead' | 'receptionist' | 'professor';
+};
+
+export type AttendanceAudioPart = {
+	id: string;
+	attendanceId: string;
+	part: AudioPart;
+	status: AudioPartStatus;
+	windowStart: string;
+	windowEnd: string;
+	recordedByUserId?: string | null;
+	recordedByUserName?: string | null;
+	deviceId?: string | null;
+	deviceLabel?: string | null;
+	coveredSeconds: number;
+	gaps: AudioGap[];
+	blobName?: string | null;
+	mime?: string | null;
+	sizeBytes?: number | null;
+	sha256?: string | null;
+	participants: AudioParticipant[];
+	transcriptionStatus: TranscriptionStatus;
+	downloadUrl?: string | null;
+	createdAt: string;
+};
+
+export type AudioTimelineEvent = {
+	id: string;
+	type: AttendanceEventType;
+	description?: string | null;
+	createdAt: string;
+	actorName: string;
+};
+
+export type AudioConfig = {
+	enabled: boolean;
+	bufferMinutes: number;
+	clipMinutes: number;
+	chunkSeconds: number;
+	serverTime: string;
+};
+
+export type AudioPendingPart = {
+	attendanceId: string;
+	academyId: string;
+	part: AudioPart;
+	windowStart: string;
+	windowEnd: string;
+	closeEventId?: string | null;
+	bufferTooOld: boolean;
+};
+
 export type DashboardSummary = {
 	kpi: {
 		attendances: number;

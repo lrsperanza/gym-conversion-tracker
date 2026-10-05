@@ -648,6 +648,13 @@ attendanceRoutes.post('/attendances/:id/events', async (c) => {
 			`;
 			if (!event) throw new Error('Falha ao reabrir atendimento.');
 			await tx`UPDATE "gym-conversion-tracker"."attendances" SET "status" = 'IN_PROGRESS', "closed_at" = NULL, "updated_at" = now() WHERE "id" = ${attendanceId}`;
+			await tx`
+				UPDATE "gym-conversion-tracker"."attendance_audio_parts"
+				SET "superseded_at" = now()
+				WHERE "attendance_id" = ${attendanceId}
+					AND "part" IN ('FULL', 'TAIL')
+					AND "superseded_at" IS NULL
+			`;
 			return event;
 		}
 

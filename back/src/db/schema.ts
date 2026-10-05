@@ -65,6 +65,18 @@ export const emailTokenPurposeEnum = gym.enum('email_token_purpose', [
 	'PASSWORD_RESET'
 ]);
 
+export const audioPartEnum = gym.enum('audio_part', ['FULL', 'HEAD', 'TAIL']);
+
+export const audioPartStatusEnum = gym.enum('audio_part_status', ['UPLOADED', 'MISSING']);
+
+export const transcriptionStatusEnum = gym.enum('transcription_status', [
+	'NOT_REQUESTED',
+	'QUEUED',
+	'PROCESSING',
+	'DONE',
+	'FAILED'
+]);
+
 const now = timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
 export const academies = gym.table(
@@ -354,6 +366,44 @@ export const attendanceLosses = gym.table('attendance_losses', {
 	description: text('description'),
 	createdAt: now
 });
+
+export const attendanceAudioParts = gym.table(
+	'attendance_audio_parts',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		attendanceId: uuid('attendance_id')
+			.notNull()
+			.references(() => attendances.id),
+		academyId: uuid('academy_id')
+			.notNull()
+			.references(() => academies.id),
+		part: audioPartEnum('part').notNull(),
+		status: audioPartStatusEnum('status').notNull(),
+		closeEventId: uuid('close_event_id').references(() => attendanceEvents.id),
+		windowStart: timestamp('window_start', { withTimezone: true }).notNull(),
+		windowEnd: timestamp('window_end', { withTimezone: true }).notNull(),
+		recordedByUserId: uuid('recorded_by_user_id').references(() => users.id),
+		deviceId: uuid('device_id'),
+		deviceLabel: text('device_label'),
+		coveredSeconds: integer('covered_seconds').notNull().default(0),
+		gaps: jsonb('gaps').notNull().default([]),
+		blobName: text('blob_name'),
+		mime: text('mime'),
+		sizeBytes: integer('size_bytes'),
+		sha256: text('sha256'),
+		participants: jsonb('participants').notNull().default({}),
+		transcriptionStatus: transcriptionStatusEnum('transcription_status').notNull().default('NOT_REQUESTED'),
+		supersededAt: timestamp('superseded_at', { withTimezone: true }),
+		createdAt: now
+	},
+	(table) => [
+		index('attendance_audio_attendance_idx').on(table.attendanceId, table.createdAt),
+		index('attendance_audio_academy_created_idx').on(table.academyId, table.createdAt),
+		uniqueIndex('attendance_audio_active_uploaded_part_idx')
+			.on(table.attendanceId, table.part)
+			.where(sql`${table.supersededAt} IS NULL AND ${table.status} = 'UPLOADED'`)
+	]
+);
 
 export const sessions = gym.table(
 	'sessions',

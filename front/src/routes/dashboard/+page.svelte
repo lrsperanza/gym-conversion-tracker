@@ -29,6 +29,7 @@
 		label_snapshot?: string | null;
 		amount_cents?: number | null;
 		loss_reason?: string | null;
+		audio_parts_count: number;
 	};
 
 	const { session } = getSessionContext();
@@ -424,11 +425,21 @@
 									<td class="py-3 pr-4">{row.receptionist_name}</td>
 									<td class="py-3 pr-4">{row.professor_name ?? '-'}</td>
 									<td class="py-3 pr-4">{statusLabel(row.status)}</td>
-									<td class="py-3 pr-4"
-										>{row.label_snapshot ?? row.loss_reason ?? '-'}{row.amount_cents
-											? ` · ${money(row.amount_cents)}`
-											: ''}</td
-									>
+									<td class="py-3 pr-4">
+										<div class="flex flex-wrap items-center gap-2">
+											<span
+												>{row.label_snapshot ?? row.loss_reason ?? '-'}{row.amount_cents
+													? ` · ${money(row.amount_cents)}`
+													: ''}</span
+											>
+											{#if row.audio_parts_count > 0}
+												<span
+													class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-100"
+													>Áudio disponível</span
+												>
+											{/if}
+										</div>
+									</td>
 									<td class="py-3">{dateTime(row.started_at)}</td>
 								</tr>
 							{/each}

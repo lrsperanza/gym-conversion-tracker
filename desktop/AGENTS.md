@@ -8,7 +8,7 @@ Contexto do monorepo: [`../gym-conversion-tracker-workspace/AGENTS.md`](../gym-c
 
 Tauri **v2** (`tauri 2.11.5`), Rust edition 2021, pacote `skyfit-evo-desktop`. Produto `Skyfit EVO`, identificador `com.skyfit.evo`.
 
-Toda a lógica está em `src-tauri/src/main.rs` (~700 linhas) mais `src-tauri/build.rs`. Crates relevantes: `tauri-plugin-single-instance`, `ureq` (update), `sha2`/`hex` (integridade), `tar`/`zstd` (payload), `serde`.
+Toda a lógica está em `src-tauri/src/main.rs` (~700 linhas) mais `src-tauri/build.rs`. Crates relevantes: `tauri-plugin-single-instance`, `ureq` (update), `sha2`/`hex` (integridade), `tar`/`zstd` (payload), `serde`, `webview2-com` (permissão de microfone no WebView2).
 
 Pontos do `tauri.conf.json` que costumam surpreender:
 
@@ -27,6 +27,8 @@ Pontos do `tauri.conf.json` que costumam surpreender:
 4. `extract_payload()`: descomprime o `payload.tar.zst` embutido via `include_bytes!` para `%LOCALAPPDATA%\SkyfitEVO\runtime\{APP_VERSION}\`, guardando o marcador `.complete` com `SKYFIT_PAYLOAD_FINGERPRINT`. Timeout de 180s a frio, 45s a quente.
 5. `spawn_bridge()`: roda `bridge.exe` sem janela de console, com `BRIDGE_PORT`, `BACK_URL`, `FRONT_URL`, `DESKTOP_APP_VERSION`, `DESKTOP_PID`, `EVO_PERFIS_DIR`, `EVO_SCREENSHOTS_DIR`. Logs em `%LOCALAPPDATA%\SkyfitEVO\data\logs\bridge.{out,err}.log`.
 6. `wait_for_local_bridge()`: se subir, janela principal em `http://localhost:4000`. Se não, mostra erro no splash por 5s e cai para `configured_front_url()` (o SWA remoto) — **nesse modo o EVO não funciona**, porque não há bridge local. `watch_for_late_bridge()` ainda pode redirecionar a janela de volta para localhost por até 300s.
+
+`open_main_window()` desativa background throttling na WebView para preservar timers/MediaRecorder minimizados e registra um handler WebView2 que permite microfone automaticamente **só** para `http://localhost:4000` / `127.0.0.1:4000`. Isso é requisito do áudio contínuo do front.
 
 O `back` **não** é iniciado pelo desktop; ele sempre usa a API remota. Ao sair, `kill_bridge()` derruba o filho — mas só bridges que **esta** instância spawneou: o relaunch do update usa `taskkill /F`, que não roda o handler de saída, então o bridge sobrevive órfão (é por isso que o passo 3 do boot evita adotar órfãos de outra versão). O Chrome do EVO é lançado destacado pelo bridge e continua aberto para preservar a sessão; no próximo start o bridge reconecta a essa janela. Segunda instância apenas foca a janela existente.
 

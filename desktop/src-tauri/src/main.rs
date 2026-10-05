@@ -12,7 +12,10 @@ use std::{
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    utils::config::BackgroundThrottlingPolicy, Manager, RunEvent, Runtime as TauriRuntime, WebviewUrl,
+    WebviewWindowBuilder,
+};
 
 const LOCAL_APP_URL: &str = "http://localhost:4000";
 const LOCAL_HEALTH_HOST: &str = "127.0.0.1";
@@ -778,15 +781,73 @@ fn open_main_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
         .title(format!("Skyfit EVO v{APP_VERSION}"))
         .inner_size(1280.0, 860.0)
         .min_inner_size(960.0, 640.0)
+        .background_throttling(BackgroundThrottlingPolicy::Disabled)
         .center()
         .build()
         .map_err(|error| error.to_string())?;
+
+    allow_localhost_microphone(&window);
 
     if devtools_enabled() {
         window.open_devtools();
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn allow_localhost_microphone<R: TauriRuntime>(window: &tauri::WebviewWindow<R>) {
+    let result = window.with_webview(|webview| unsafe {
+        use webview2_com::{take_pwstr, Microsoft::Web::WebView2::Win32::*, PermissionRequestedEventHandler};
+
+        let mut token = 0;
+        if let Err(error) = webview.controller().CoreWebView2().and_then(|webview| {
+            webview.add_PermissionRequested(
+                &PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+
+                    let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                    args.PermissionKind(&mut kind)?;
+                    if kind != COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                        return Ok(());
+                    }
+
+                    let mut uri = Default::default();
+                    args.Uri(&mut uri)?;
+                    let uri = take_pwstr(uri);
+                    if is_local_bridge_uri(&uri) {
+                        args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+                    }
+
+                    Ok(())
+                })),
+                &mut token,
+            )
+        }) {
+            eprintln!("Falha ao registrar permissao automatica de microfone: {error}");
+        }
+    });
+
+    if let Err(error) = result {
+        eprintln!("Falha ao acessar WebView2 para permissao de microfone: {error}");
+    }
+}
+
+#[cfg(not(windows))]
+fn allow_localhost_microphone<R: TauriRuntime>(_window: &tauri::WebviewWindow<R>) {}
+
+#[cfg(windows)]
+fn is_local_bridge_uri(uri: &str) -> bool {
+    match tauri::Url::parse(uri) {
+        Ok(parsed) => {
+            parsed.scheme() == "http"
+                && matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"))
+                && parsed.port_or_known_default() == Some(LOCAL_HEALTH_PORT)
+        }
+        Err(_) => false,
+    }
 }
 
 fn devtools_enabled() -> bool {
