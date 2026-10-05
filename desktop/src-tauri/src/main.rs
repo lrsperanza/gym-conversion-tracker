@@ -1,3 +1,5 @@
+mod evo_copy;
+
 use std::{
     env,
     fs::{self, File, OpenOptions},
@@ -68,6 +70,11 @@ fn main() {
     let bridge_state_for_exit = bridge_state.clone();
 
     tauri::Builder::default()
+        .manage(evo_copy::MacroState::default())
+        .invoke_handler(tauri::generate_handler![
+            evo_copy::prepare_evo_copy,
+            evo_copy::evo_copy_status
+        ])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app
                 .get_webview_window("main")
@@ -79,6 +86,7 @@ fn main() {
         }))
         .manage(bridge_state.clone())
         .setup(move |app| {
+            app.add_capability(evo_copy::remote_capability())?;
             let app_handle = app.handle().clone();
             let state = bridge_state_for_setup.clone();
             thread::spawn(move || {
@@ -778,6 +786,7 @@ fn local_bridge_ready() -> bool {
 fn open_main_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     let parsed = tauri::Url::parse(url).map_err(|error| error.to_string())?;
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
+        .initialization_script("window.skyfitEvoCopy = (data) => window.__TAURI_INTERNALS__.invoke('prepare_evo_copy', { data }); window.skyfitEvoCopyStatus = () => window.__TAURI_INTERNALS__.invoke('evo_copy_status');")
         .title(format!("Skyfit EVO v{APP_VERSION}"))
         .inner_size(1280.0, 860.0)
         .min_inner_size(960.0, 640.0)

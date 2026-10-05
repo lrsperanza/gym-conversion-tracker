@@ -1,6 +1,6 @@
 [package]
 name = "skyfit-evo-desktop"
-version = "1.0.16"
+version = "1.0.20"
 description = "Skyfit EVO desktop launcher"
 authors = ["Skyfit"]
 edition = "2021"
@@ -17,6 +17,9 @@ tar = "0.4"
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 webview2-com = "0.38.2"
 zstd = "0.13"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

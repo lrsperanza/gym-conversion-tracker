@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-evo-copy-status"
+description = "Enables the evo_copy_status command without any pre-configured scope."
+commands.allow = ["evo_copy_status"]
+
+[[permission]]
+identifier = "deny-evo-copy-status"
+description = "Denies the evo_copy_status command without any pre-configured scope."
+commands.deny = ["evo_copy_status"]

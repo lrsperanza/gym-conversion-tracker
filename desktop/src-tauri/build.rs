@@ -6,7 +6,10 @@ use std::{
 };
 
 fn main() {
-    tauri_build::build();
+    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new().commands(&["prepare_evo_copy", "evo_copy_status"]),
+    ))
+    .expect("failed to build Tauri permissions");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let payload_dir = manifest_dir.join("payload");

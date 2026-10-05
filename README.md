@@ -2,6 +2,8 @@
 
 Sistema para acompanhar atendimentos presenciais, conversão de vendas, performance de recepcionistas, professores e duplas recepcionista-professor.
 
+O modal de eventos oferece ações independentes: **Registrar evento**, **Abrir EVO e preencher automaticamente** (Puppeteer) e **Cópia dinâmica** (macro nativa Ctrl+Shift+V no Tauri Windows, sem extensão). Veja [como usar a cópia dinâmica](desktop/COPIA-DINAMICA.md).
+
 ## Estrutura
 
 - `back/`: API Bun + Hono + PostgreSQL + Drizzle + SMTP AWS.

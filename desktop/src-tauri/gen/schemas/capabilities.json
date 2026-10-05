@@ -1,1 +1,1 @@
-{}
+{"evo-copy":{"identifier":"evo-copy","description":"Native EVO keyboard macro, only from the local Skyfit main window.","remote":{"urls":["http://localhost:4000/*","http://127.0.0.1:4000/*"]},"local":true,"windows":["main"],"permissions":["allow-prepare-evo-copy","allow-evo-copy-status"]}}

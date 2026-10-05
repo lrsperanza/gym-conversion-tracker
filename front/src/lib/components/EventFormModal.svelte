@@ -1,14 +1,9 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { api, dateTime, money } from '$lib/api/client';
+	import { copyEvoData } from '$lib/evo-copy';
 	import { evoApi, evoAvailable } from '$lib/api/evo';
-	import {
-		describeError,
-		evoError,
-		evoLog,
-		evoWarn,
-		openEvoDiagnostics
-	} from '$lib/api/evo-log.svelte';
+	import { describeError, evoError, evoLog, openEvoDiagnostics } from '$lib/api/evo-log.svelte';
 	import { nudgeAudioUploader } from '$lib/audio/uploader';
 	import { asCents, errorMessage, eventTypeLabel } from '$lib/helpers';
 	import type {
@@ -65,6 +60,7 @@
 	];
 
 	let busy = $state(false);
+	let copyArmed = $state(false);
 	let message = $state('');
 	let messageKind = $state<'info' | 'warning' | 'error'>('info');
 	let eventForm = $state(createForm());
@@ -72,8 +68,6 @@
 	let evoLoading = $state(false);
 	let plansSyncBusy = $state(false);
 	let evoCredentials = $state<EvoCredentialsStatus | null>(null);
-	let sendToEvo = $state(true);
-	let evoRetryAttendanceId = $state<string | null>(null);
 	let evoCredentialsForm = $state(createCredentialsForm());
 	let evoForm = $state(createEvoForm());
 	let initializedAttendanceId = $state<string | null>(null);
@@ -83,7 +77,6 @@
 		outcomeTypes.find((outcome) => outcome.id === eventForm.outcomeTypeId)
 	);
 	let evoCredentialsConfigured = $derived(evoCredentials?.configured === true);
-	let shouldUseEvo = $derived(eventForm.type === 'SALE' && sendToEvo && evoBridgeAvailable);
 	let messageClass = $derived(
 		messageKind === 'error'
 			? 'border-red-200 bg-red-50 text-red-800'
@@ -251,12 +244,11 @@
 
 		evoLog(`Job ${jobId} concluído: formulário do EVO preenchido.`);
 		messageKind = 'info';
-		message = 'Venda registrada. Formulário EVO preenchido; revise e salve manualmente.';
+		message = 'Formulário EVO preenchido; revise e salve manualmente.';
 	}
 
 	async function syncPlansFromEvo() {
-		if (plansSyncBusy) return;
-		if (!attendance) return;
+		if (!attendance || busy || plansSyncBusy) return;
 		if (!evoBridgeAvailable) {
 			messageKind = 'warning';
 			message = 'Bridge EVO indisponível. Abra o app Skyfit EVO para atualizar os planos.';
@@ -329,17 +321,33 @@
 		}
 	}
 
-	async function retryEvoSale() {
-		if (!evoRetryAttendanceId || busy) return;
+	async function openEvo() {
+		if (!attendance || busy || plansSyncBusy) return;
 		busy = true;
-		evoLog(`Nova tentativa manual de enviar o atendimento ${evoRetryAttendanceId} para o EVO.`);
 		try {
-			await submitEvoSale(evoRetryAttendanceId);
-			evoRetryAttendanceId = null;
+			await saveEvoLeadFields(attendance);
+			await ensureEvoCredentials();
+			await submitEvoSale(attendance.id);
 		} catch (error) {
-			messageKind = 'warning';
-			message = `Venda registrada, mas o EVO precisa de atenção: ${errorMessage(error)}`;
-			evoWarn('A nova tentativa também falhou.', { erro: describeError(error) });
+			messageKind = 'error';
+			message = errorMessage(error);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function dynamicCopy() {
+		if (!attendance || busy) return;
+		busy = true;
+		try {
+			await copyEvoData(attendance, evoForm);
+			copyArmed = true;
+			messageKind = 'info';
+			message =
+				'Cópia dinâmica pronta por 5 minutos. Selecione Nome no EVO, pressione Ctrl+Shift+V e solte as teclas. Esc interrompe. Revise e salve manualmente.';
+		} catch (error) {
+			messageKind = 'error';
+			message = errorMessage(error);
 		} finally {
 			busy = false;
 		}
@@ -347,25 +355,15 @@
 
 	async function submitAttendanceEvent(event: SubmitEvent) {
 		event.preventDefault();
-		if (!attendance) return;
+		if (!attendance || busy || plansSyncBusy) return;
 		const currentAttendance = attendance;
 
 		busy = true;
 		message = '';
 		messageKind = 'info';
-		evoRetryAttendanceId = null;
-		const useEvoForSale = eventForm.type === 'SALE' && shouldUseEvo;
 		try {
 			let payload: Record<string, unknown> = { type: eventForm.type };
 			if (eventForm.type === 'SALE') {
-				if (useEvoForSale) {
-					message = 'Salvando dados para o EVO...';
-					await saveEvoLeadFields(currentAttendance);
-					if (!evoCredentialsConfigured) {
-						message = 'Salvando credenciais do EVO...';
-						await ensureEvoCredentials();
-					}
-				}
 				payload = {
 					type: 'SALE',
 					outcomeTypeId: eventForm.outcomeTypeId || null,
@@ -397,22 +395,8 @@
 			nudgeAudioUploader();
 			eventForm = createForm();
 			await onSaved();
-			if (!useEvoForSale) {
-				message = '';
-				onClose();
-				return;
-			}
-			try {
-				await submitEvoSale(currentAttendance.id);
-			} catch (error) {
-				messageKind = 'warning';
-				message = `Venda registrada, mas o EVO precisa de atenção: ${errorMessage(error)}`;
-				evoRetryAttendanceId = currentAttendance.id;
-				evoWarn('Venda salva no tracker, mas o envio para o EVO falhou.', {
-					atendimento: currentAttendance.id,
-					erro: describeError(error)
-				});
-			}
+			message = '';
+			onClose();
 		} catch (error) {
 			messageKind = 'error';
 			message = errorMessage(error);
@@ -420,6 +404,26 @@
 			busy = false;
 		}
 	}
+
+	$effect(() => {
+		if (!browser || !copyArmed || !attendance) return;
+		let stopped = false;
+		const interval = setInterval(async () => {
+			try {
+				const status = await window.skyfitEvoCopyStatus?.();
+				if (stopped || !status || busy) return;
+				message = status;
+				messageKind = status.startsWith('Cópia interrompida') ? 'warning' : 'info';
+				if (!status.startsWith('Pronta:') && status !== 'Preenchendo EVO...') copyArmed = false;
+			} catch {
+				if (!stopped) copyArmed = false;
+			}
+		}, 1000);
+		return () => {
+			stopped = true;
+			clearInterval(interval);
+		};
+	});
 
 	$effect(() => {
 		const currentId = attendance?.id ?? null;
@@ -430,8 +434,6 @@
 			evoCredentials = null;
 			evoCredentialsForm = createCredentialsForm();
 			evoForm = createEvoForm();
-			sendToEvo = true;
-			evoRetryAttendanceId = null;
 			return;
 		}
 		if (currentId === initializedAttendanceId) return;
@@ -444,8 +446,6 @@
 		evoCredentials = null;
 		evoCredentialsForm = createCredentialsForm();
 		evoForm = createEvoForm(attendance);
-		sendToEvo = true;
-		evoRetryAttendanceId = null;
 		void loadEvoState(currentId);
 	});
 </script>
@@ -560,150 +560,141 @@
 						</div>
 					{/if}
 
-					{#if evoLoading}
-						<p
-							class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
-						>
-							Verificando integração EVO...
-						</p>
-					{:else if evoBridgeAvailable}
-						<label
-							class="flex items-center gap-2 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-900"
-						>
-							<input
-								class="rounded border-slate-300"
-								type="checkbox"
-								bind:checked={sendToEvo}
-								disabled={busy}
-							/>
-							Cadastrar no EVO
-						</label>
-
-						{#if sendToEvo}
-							<div class="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-								<div>
-									<h4 class="font-bold text-slate-950">Dados para o EVO</h4>
-									<p class="text-sm text-slate-600">
-										{#if evoCredentialsConfigured}
-											Credenciais salvas para {evoCredentials?.username}.
-										{:else}
-											Informe usuário e senha EVO para esta venda.
-										{/if}
-									</p>
-									<p class="text-sm text-slate-600">
-										Campos em branco ficam vazios no formulário do EVO.
-									</p>
-								</div>
-
-								<div class="grid gap-4 sm:grid-cols-2">
-									<label class="text-sm font-medium text-slate-700"
-										>Sobrenome<input
-											class="mt-1 w-full rounded-2xl border-slate-300"
-											bind:value={evoForm.surname}
-											disabled={busy}
-										/></label
-									>
-									<label class="text-sm font-medium text-slate-700"
-										>CPF<input
-											class="mt-1 w-full rounded-2xl border-slate-300"
-											inputmode="numeric"
-											bind:value={evoForm.cpf}
-											disabled={busy}
-										/></label
-									>
-									<label class="text-sm font-medium text-slate-700"
-										>Data de nascimento<input
-											class="mt-1 w-full rounded-2xl border-slate-300"
-											type="date"
-											bind:value={evoForm.birthDate}
-											disabled={busy}
-										/></label
-									>
-									<label class="text-sm font-medium text-slate-700">
-										Gênero
-										<select
-											class="mt-1 w-full rounded-2xl border-slate-300"
-											bind:value={evoForm.gender}
-											disabled={busy}
-										>
-											<option value="">Não informar</option>
-											<option value="Masculino">Masculino</option>
-											<option value="Feminino">Feminino</option>
-											<option value="Outro">Outro</option>
-										</select>
-									</label>
-									<label class="text-sm font-medium text-slate-700"
-										>CEP<input
-											class="mt-1 w-full rounded-2xl border-slate-300"
-											inputmode="numeric"
-											bind:value={evoForm.cep}
-											disabled={busy}
-										/></label
-									>
-									<label class="text-sm font-medium text-slate-700">
-										Tipo de visita
-										<select
-											class="mt-1 w-full rounded-2xl border-slate-300"
-											bind:value={evoForm.visitType}
-											disabled={busy}
-										>
-											<option value="">Não informar</option>
-											{#each VISIT_TYPES as option (option)}
-												<option value={option}>{option}</option>
-											{/each}
-										</select>
-									</label>
-									<label class="text-sm font-medium text-slate-700 sm:col-span-2">
-										Como conheceu
-										<select
-											class="mt-1 w-full rounded-2xl border-slate-300"
-											bind:value={evoForm.howFoundUs}
-											disabled={busy}
-										>
-											<option value="">Não informar</option>
-											{#each HOW_FOUND_US as option (option)}
-												<option value={option}>{option}</option>
-											{/each}
-										</select>
-									</label>
-								</div>
-
-								{#if !evoCredentialsConfigured}
-									<div class="grid gap-4 border-t border-slate-200 pt-4 sm:grid-cols-2">
-										<label class="text-sm font-medium text-slate-700"
-											>Usuário EVO<input
-												class="mt-1 w-full rounded-2xl border-slate-300"
-												bind:value={evoCredentialsForm.username}
-												disabled={busy}
-												required={shouldUseEvo}
-											/></label
-										>
-										<label class="text-sm font-medium text-slate-700"
-											>Senha EVO<input
-												class="mt-1 w-full rounded-2xl border-slate-300"
-												type="password"
-												bind:value={evoCredentialsForm.password}
-												disabled={busy}
-												required={shouldUseEvo}
-											/></label
-										>
-									</div>
+					<div class="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+						<div>
+							<h4 class="font-bold text-slate-950">Dados para o EVO</h4>
+							<p class="text-sm text-slate-600">
+								{#if evoCredentialsConfigured}
+									Credenciais salvas para {evoCredentials?.username}.
+								{:else}
+									Usuário e senha são necessários apenas para abrir o EVO automaticamente.
 								{/if}
+							</p>
+							<p class="text-sm text-slate-600">
+								Campos em branco ficam vazios no formulário do EVO.
+							</p>
+						</div>
+
+						<div class="grid gap-4 sm:grid-cols-2">
+							<label class="text-sm font-medium text-slate-700"
+								>Sobrenome<input
+									class="mt-1 w-full rounded-2xl border-slate-300"
+									bind:value={evoForm.surname}
+									disabled={busy}
+								/></label
+							>
+							<label class="text-sm font-medium text-slate-700"
+								>CPF<input
+									class="mt-1 w-full rounded-2xl border-slate-300"
+									inputmode="numeric"
+									bind:value={evoForm.cpf}
+									disabled={busy}
+								/></label
+							>
+							<label class="text-sm font-medium text-slate-700"
+								>Data de nascimento<input
+									class="mt-1 w-full rounded-2xl border-slate-300"
+									type="date"
+									bind:value={evoForm.birthDate}
+									disabled={busy}
+								/></label
+							>
+							<label class="text-sm font-medium text-slate-700">
+								Gênero
+								<select
+									class="mt-1 w-full rounded-2xl border-slate-300"
+									bind:value={evoForm.gender}
+									disabled={busy}
+								>
+									<option value="">Não informar</option>
+									<option value="Masculino">Masculino</option>
+									<option value="Feminino">Feminino</option>
+									<option value="Outro">Outro</option>
+								</select>
+							</label>
+							<label class="text-sm font-medium text-slate-700"
+								>CEP<input
+									class="mt-1 w-full rounded-2xl border-slate-300"
+									inputmode="numeric"
+									bind:value={evoForm.cep}
+									disabled={busy}
+								/></label
+							>
+							<label class="text-sm font-medium text-slate-700">
+								Tipo de visita
+								<select
+									class="mt-1 w-full rounded-2xl border-slate-300"
+									bind:value={evoForm.visitType}
+									disabled={busy}
+								>
+									<option value="">Não informar</option>
+									{#each VISIT_TYPES as option (option)}
+										<option value={option}>{option}</option>
+									{/each}
+								</select>
+							</label>
+							<label class="text-sm font-medium text-slate-700 sm:col-span-2">
+								Como conheceu
+								<select
+									class="mt-1 w-full rounded-2xl border-slate-300"
+									bind:value={evoForm.howFoundUs}
+									disabled={busy}
+								>
+									<option value="">Não informar</option>
+									{#each HOW_FOUND_US as option (option)}
+										<option value={option}>{option}</option>
+									{/each}
+								</select>
+							</label>
+						</div>
+
+						{#if evoBridgeAvailable && !evoCredentialsConfigured}
+							<div class="grid gap-4 border-t border-slate-200 pt-4 sm:grid-cols-2">
+								<label class="text-sm font-medium text-slate-700"
+									>Usuário EVO<input
+										class="mt-1 w-full rounded-2xl border-slate-300"
+										bind:value={evoCredentialsForm.username}
+										disabled={busy}
+									/></label
+								>
+								<label class="text-sm font-medium text-slate-700"
+									>Senha EVO<input
+										class="mt-1 w-full rounded-2xl border-slate-300"
+										type="password"
+										bind:value={evoCredentialsForm.password}
+										disabled={busy}
+									/></label
+								>
 							</div>
 						{/if}
-					{:else}
-						<div
-							class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
+					</div>
+					<div class="flex flex-wrap gap-2">
+						<button
+							type="button"
+							class="rounded-2xl border border-sky-300 px-4 py-3 font-bold text-sky-700 disabled:opacity-60"
+							onclick={dynamicCopy}
+							disabled={busy}>Cópia dinâmica</button
 						>
-							<p>Integração EVO indisponível. A venda será registrada apenas no tracker.</p>
-							<button
+						<button
+							type="button"
+							class="rounded-2xl border border-sky-300 px-4 py-3 font-bold text-sky-700 disabled:opacity-60"
+							onclick={openEvo}
+							disabled={busy || plansSyncBusy || evoLoading || !evoBridgeAvailable}
+							>Abrir EVO e preencher automaticamente</button
+						>
+					</div>
+					<p class="text-xs text-slate-600">
+						Cópia dinâmica usa o teclado do app Skyfit EVO. No cadastro novo, mantenha o DDI +55,
+						selecione Nome e pressione Ctrl+Shift+V. Nenhuma dessas ações registra um evento.
+					</p>
+					{#if !evoBridgeAvailable && !evoLoading}
+						<p class="text-sm text-slate-600">
+							Abra o app Skyfit EVO para usar o preenchimento automático. <button
 								type="button"
-								class="mt-2 rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white"
-								onclick={openEvoDiagnostics}
+								class="underline"
+								onclick={openEvoDiagnostics}>Ver diagnóstico</button
 							>
-								Ver diagnóstico
-							</button>
-						</div>
+						</p>
 					{/if}
 				{:else if eventForm.type === 'LOSS'}
 					<label class="text-sm font-medium text-slate-700">
@@ -746,19 +737,6 @@
 					<p class={`rounded-2xl border px-4 py-3 text-sm font-medium ${messageClass}`}>
 						{message}
 					</p>
-				{/if}
-
-				{#if evoRetryAttendanceId}
-					<div class="flex justify-end">
-						<button
-							type="button"
-							class="rounded-2xl bg-amber-600 px-5 py-3 font-bold text-white hover:bg-amber-700 disabled:opacity-60"
-							onclick={retryEvoSale}
-							disabled={busy}
-						>
-							Tentar preencher o EVO novamente
-						</button>
-					</div>
 				{/if}
 
 				<div class="flex flex-wrap justify-end gap-2">
