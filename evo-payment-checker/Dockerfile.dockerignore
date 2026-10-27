@@ -1,0 +1,11 @@
+# Contexto de build é a raiz do monorepo (desktop/dist, clips etc. pesam GBs).
+# Tudo fica de fora, exceto o que a imagem usa.
+*
+!evo-puppeteer/package.json
+!evo-puppeteer/bun.lock
+!evo-puppeteer/index.ts
+!evo-puppeteer/src/**
+!evo-payment-checker/package.json
+!evo-payment-checker/bun.lock
+!evo-payment-checker/src/**
+**/*.test.ts

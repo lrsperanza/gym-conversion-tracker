@@ -12,6 +12,7 @@ Este folder é só orquestração (multi-root VS Code + `run-all.ps1` / `stop-al
 | `../front/` | SPA SvelteKit (Azure SWA) | `:5173` (dev) | bun | `src/routes/` |
 | `../evo-bridge/` | Proxy same-origin + jobs EVO | `127.0.0.1:4000` | bun | `src/server.ts` |
 | `../evo-puppeteer/` | Automação Puppeteer do EVO | CLI | bun | `src/cli.ts` / `src/index.ts` |
+| `../evo-payment-checker/` | Conferência diária de pagamentos no EVO (Cloud Run Job, 01:00) | — | bun | `src/check.ts` |
 | `../desktop/` | Launcher Tauri Windows (“Skyfit EVO”) | — | Rust/Tauri | `src-tauri/src/main.rs` |
 | (este folder) | Orquestração local | — | — | `run-all.ps1`, `stop-all.ps1` |
 
@@ -27,6 +28,7 @@ O bridge **não serve `front/build` do disco** — ele faz proxy HTTP de `FRONT_
 ## Dependências entre apps
 
 - `evo-bridge` depende de `evo-puppeteer` via `"file:../evo-puppeteer"`.
+- `evo-payment-checker` também usa `evo-puppeteer` (login + 2FA) e escreve direto no Postgres do back (`sales.payment_status`). A imagem é buildada com contexto na raiz do monorepo.
 - `desktop` embute `bridge.exe` (o `evo-bridge` compilado); não embute o front nem sobe o back.
 - **Não há pacote TypeScript compartilhado.** Schema canônico: `back/src/db/schema.ts`. Front espelha em `front/src/lib/types.ts`.
 - **Não inventar Redis/filas:** jobs EVO são um `Map` in-process em `evo-bridge/src/job.ts`.
@@ -48,6 +50,7 @@ O ticket existe porque o front pode estar em HTTPS remoto enquanto o bridge é H
 - [`../front/AGENTS.md`](../front/AGENTS.md)
 - [`../evo-bridge/AGENTS.md`](../evo-bridge/AGENTS.md)
 - [`../evo-puppeteer/AGENTS.md`](../evo-puppeteer/AGENTS.md)
+- [`../evo-payment-checker/AGENTS.md`](../evo-payment-checker/AGENTS.md)
 - [`../desktop/AGENTS.md`](../desktop/AGENTS.md)
 
 Runbook humano: [`../README.md`](../README.md).

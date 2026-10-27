@@ -18,6 +18,16 @@ export function statusLabel(status: string) {
 	return labels[status] ?? status;
 }
 
+export function paymentStatusLabel(status?: string | null) {
+	const labels: Record<string, string> = {
+		A_CONFERIR: 'A conferir no EVO',
+		PAGO: 'Pago',
+		PAGAMENTO_PENDENTE: 'Pagamento pendente',
+		NAO_PAGO: 'Não pago'
+	};
+	return status ? (labels[status] ?? status) : '';
+}
+
 export function channelLabel(channel?: AttendanceChannel | string | null) {
 	const labels: Record<AttendanceChannel, string> = {
 		PRESENCIAL: 'Presencial',

@@ -529,6 +529,7 @@ attendanceRoutes.get('/leads/:id/events', async (c) => {
 			a."status" AS attendance_status,
 			s."amount_cents",
 			s."label_snapshot",
+			s."payment_status",
 			lr."label" AS loss_reason_label,
 			EXISTS (
 				SELECT 1

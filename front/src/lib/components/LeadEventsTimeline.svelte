@@ -6,6 +6,7 @@
 	import type { LeadEvent } from '$lib/types';
 	import AudioReviewModal from './AudioReviewModal.svelte';
 	import ClipReviewModal from './ClipReviewModal.svelte';
+	import PaymentBadge from './PaymentBadge.svelte';
 
 	let {
 		leadId,
@@ -114,6 +115,7 @@
 										<p class="text-xs font-bold text-emerald-800">
 											{event.label_snapshot} · {money(event.amount_cents)}
 										</p>
+										<PaymentBadge status={event.payment_status} />
 										{#if canReviewClips}
 											<button
 												type="button"

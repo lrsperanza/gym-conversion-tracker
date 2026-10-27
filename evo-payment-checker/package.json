@@ -1,0 +1,20 @@
+{
+	"name": "evo-payment-checker",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"start": "bun src/check.ts",
+		"dry-run": "bun src/check.ts --dry-run",
+		"typecheck": "tsc --noEmit",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"evo-puppeteer": "file:../evo-puppeteer",
+		"postgres": "^3.4.7",
+		"puppeteer-core": "^25.4.0"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5"
+	}
+}

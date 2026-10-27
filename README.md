@@ -10,6 +10,7 @@ O modal de eventos oferece ações independentes: **Registrar evento**, **Abrir 
 - `front/`: SvelteKit estático com Svelte 5, Tailwind e Playwright.
 - `evo-puppeteer/`: automação Puppeteer do EVO.
 - `evo-bridge/`: servidor local que entrega o build do front e aciona o Puppeteer.
+- `evo-payment-checker/`: job diário (Cloud Run Job, 01:00) que confere no EVO se as vendas lançadas foram pagas.
 
 ## Subir tudo de uma vez
 
@@ -121,8 +122,26 @@ Os artefatos finais ficam em `desktop/dist/`:
 - `Skyfit-EVO-<version>.exe`
 - `Skyfit-EVO-<version>.zip`, contendo o executável e `LEIA-ME.txt`
 
+## Conferência de pagamentos no EVO
+
+`evo-payment-checker/` roda todo dia às 01:00 (Brasília) como Cloud Run Job. Ele
+abre um Chromium headless, faz login no EVO com as credenciais EVO (e 2FA) salvas
+em Conta pelo usuário `lrsperanza@gmail.com`, procura cada cliente por CPF,
+e-mail ou nome e confere no histórico de vendas do EVO se há valor pago. Detalhes
+em [`evo-payment-checker/AGENTS.md`](evo-payment-checker/AGENTS.md).
+
+```powershell
+cd back; bun run db:migrate          # aplica 0010_sale_payment_status.sql
+cd ..\evo-payment-checker
+bun install                          # gera o bun.lock
+copy .env.example .env               # mesmos Postgre* e EVO_CRED_KEY do back
+bun src/check.ts --dry-run --headed  # teste local, sem gravar
+.\deploy.ps1 -RunNow                 # Cloud Run Job + Scheduler 01:00
+```
+
 ## Métricas
 
+- Só vendas com pagamento confirmado no EVO (`payment_status = PAGO`) somam em receita, conversão e rankings. Vendas novas ficam “A conferir” até a conferência da madrugada; as não encontradas viram “Pagamento pendente” e são reconferidas diariamente por 30 dias, depois “Não paga”.
 - Receita global soma cada venda uma única vez.
 - Atribuição original: venda conta para o recepcionista, professor e dupla do atendimento em que o lead foi recebido.
 - Atribuição de fechador: venda também é exibida para o usuário que registrou o fechamento.

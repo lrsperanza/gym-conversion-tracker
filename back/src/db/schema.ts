@@ -65,6 +65,13 @@ export const emailTokenPurposeEnum = gym.enum('email_token_purpose', [
 	'PASSWORD_RESET'
 ]);
 
+export const salePaymentStatusEnum = gym.enum('sale_payment_status', [
+	'A_CONFERIR',
+	'PAGO',
+	'PAGAMENTO_PENDENTE',
+	'NAO_PAGO'
+]);
+
 export const audioPartEnum = gym.enum('audio_part', ['FULL', 'HEAD', 'TAIL']);
 
 export const audioPartStatusEnum = gym.enum('audio_part_status', ['UPLOADED', 'MISSING']);
@@ -328,10 +335,21 @@ export const sales = gym.table(
 		originalProfessorId: uuid('original_professor_id').references(() => professors.id),
 		labelSnapshot: text('label_snapshot').notNull(),
 		amountCents: integer('amount_cents').notNull(),
+		/** Só `PAGO` soma no dashboard; o job `evo-payment-checker` confere no EVO. */
+		paymentStatus: salePaymentStatusEnum('payment_status').notNull().default('A_CONFERIR'),
+		paymentCheckedAt: timestamp('payment_checked_at', { withTimezone: true }),
+		paymentConfirmedAt: timestamp('payment_confirmed_at', { withTimezone: true }),
+		paymentCheckCount: integer('payment_check_count').notNull().default(0),
+		paymentCheckNote: text('payment_check_note'),
+		evoClientId: integer('evo_client_id'),
+		evoSaleId: integer('evo_sale_id'),
+		evoPaidCents: integer('evo_paid_cents'),
 		createdAt: now
 	},
 	(table) => [
 		index('sales_attendance_idx').on(table.attendanceId),
+		index('sales_payment_status_idx').on(table.paymentStatus, table.createdAt),
+		uniqueIndex('sales_evo_sale_id_idx').on(table.evoSaleId).where(sql`${table.evoSaleId} IS NOT NULL`),
 		index('sales_original_receptionist_created_idx').on(table.originalReceptionistId, table.createdAt),
 		index('sales_original_professor_created_idx').on(table.originalProfessorId, table.createdAt),
 		index('sales_sold_by_created_idx').on(table.soldByUserId, table.createdAt)

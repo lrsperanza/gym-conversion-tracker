@@ -39,6 +39,23 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 		LEFT JOIN valid_sales s ON s."attendance_id" = scoped."id"
 	`;
 
+	// Vendas lançadas que ainda não somam: aguardando a conferência noturna,
+	// pendentes de pagamento ou dadas como não pagas.
+	const payments = await sql<Array<{ payment_status: PaymentStatus; sales: number; amount_cents: number }>>`
+		WITH scoped AS (
+			SELECT a.*
+			FROM "gym-conversion-tracker"."attendances" a
+			WHERE ${scope}
+		), all_sales AS (${dedupedSalesSql(['A_CONFERIR', 'PAGO', 'PAGAMENTO_PENDENTE', 'NAO_PAGO'])})
+		SELECT
+			s."payment_status",
+			COUNT(*)::int AS sales,
+			COALESCE(SUM(s."amount_cents"), 0)::int AS amount_cents
+		FROM scoped
+		JOIN all_sales s ON s."attendance_id" = scoped."id"
+		GROUP BY s."payment_status"
+	`;
+
 	const receptionists = await sql`
 		WITH scoped AS (
 			SELECT a.*
@@ -154,6 +171,12 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 		professors: withConversionRate([...professors] as Array<{ attendances: number; converted: number; revenue_cents: number }>),
 		pairs: withConversionRate([...pairs] as Array<{ attendances: number; converted: number; revenue_cents: number }>),
 		closers,
+		payments: Object.fromEntries(
+			(['A_CONFERIR', 'PAGO', 'PAGAMENTO_PENDENTE', 'NAO_PAGO'] as const).map((status) => {
+				const row = payments.find((item) => item.payment_status === status);
+				return [status, { sales: row?.sales ?? 0, amount_cents: row?.amount_cents ?? 0 }];
+			})
+		),
 		timeline: withConversionRate([...timeline] as Array<{ attendances: number; converted: number; revenue_cents: number }>)
 	});
 });
@@ -182,6 +205,9 @@ dashboardRoutes.get('/dashboard/audit', async (c) => {
 				p."name" AS professor_name,
 				s."label_snapshot",
 				s."amount_cents",
+				s."payment_status",
+				s."payment_checked_at",
+				s."payment_check_note",
 				lr."label" AS loss_reason,
 				lr."category" AS loss_category,
 				(
@@ -223,6 +249,8 @@ function parseDashboardQuery(c: { req: { query: (key: string) => string | undefi
 		hourTo: c.req.query('hourTo') || undefined
 	});
 }
+
+type PaymentStatus = 'A_CONFERIR' | 'PAGO' | 'PAGAMENTO_PENDENTE' | 'NAO_PAGO';
 
 type DashboardFilters = {
 	academyId?: string;
@@ -267,12 +295,16 @@ function scheduleScopeSql(filters: Pick<DashboardFilters, 'weekdays' | 'hourFrom
 // Duas vendas para o mesmo lead no mesmo dia são impossíveis no domínio — o mínimo
 // é uma perto da meia-noite e outra depois da 1h. Quando acontece (registro duplicado),
 // vale só a ÚLTIMA venda do dia (created_at em America/Sao_Paulo), que é a válida.
-function dedupedSalesSql() {
+//
+// Só vendas com pagamento confirmado no EVO (`payment_status = 'PAGO'`) entram em
+// receita e conversão. A conferência é feita pelo job `evo-payment-checker`.
+function dedupedSalesSql(paymentStatuses: PaymentStatus[] = ['PAGO']) {
 	return sql`
 		SELECT DISTINCT ON (la."lead_id", (s."created_at" AT TIME ZONE 'America/Sao_Paulo')::date)
 			s.*
 		FROM "gym-conversion-tracker"."sales" s
 		JOIN "gym-conversion-tracker"."attendances" la ON la."id" = s."attendance_id"
+		WHERE s."payment_status"::text = ANY (${paymentStatuses}::text[])
 		ORDER BY la."lead_id", (s."created_at" AT TIME ZONE 'America/Sao_Paulo')::date, s."created_at" DESC
 	`;
 }

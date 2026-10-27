@@ -54,9 +54,13 @@ export type LeadEvent = {
 	attendance_status: Attendance['status'];
 	amount_cents?: number | null;
 	label_snapshot?: string | null;
+	payment_status?: SalePaymentStatus | null;
 	loss_reason_label?: string | null;
 	schedule_cancelled: boolean;
 };
+
+/** Conferência de pagamento no EVO feita pelo job evo-payment-checker. Só PAGO soma. */
+export type SalePaymentStatus = 'A_CONFERIR' | 'PAGO' | 'PAGAMENTO_PENDENTE' | 'NAO_PAGO';
 
 export type Attendance = {
 	id: string;
@@ -309,6 +313,7 @@ export type DashboardSummary = {
 		}
 	>;
 	closers: Array<{ id: string; name: string; sales: number; revenue_cents: number }>;
+	payments: Record<SalePaymentStatus, { sales: number; amount_cents: number }>;
 	timeline: MetricRow[];
 };
 

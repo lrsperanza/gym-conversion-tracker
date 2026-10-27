@@ -6,6 +6,7 @@
 	import Empty from '$lib/components/Empty.svelte';
 	import MetricTable from '$lib/components/MetricTable.svelte';
 	import Notice from '$lib/components/Notice.svelte';
+	import PaymentBadge from '$lib/components/PaymentBadge.svelte';
 	import {
 		channelLabel,
 		dateToIso,
@@ -15,7 +16,13 @@
 		statusLabel
 	} from '$lib/helpers';
 	import { getSessionContext } from '$lib/session';
-	import type { Academy, Attendance, AttendanceChannel, DashboardSummary } from '$lib/types';
+	import type {
+		Academy,
+		Attendance,
+		AttendanceChannel,
+		DashboardSummary,
+		SalePaymentStatus
+	} from '$lib/types';
 	import { onMount } from 'svelte';
 
 	type AuditRow = {
@@ -28,6 +35,9 @@
 		professor_name?: string | null;
 		label_snapshot?: string | null;
 		amount_cents?: number | null;
+		payment_status?: SalePaymentStatus | null;
+		payment_checked_at?: string | null;
+		payment_check_note?: string | null;
 		loss_reason?: string | null;
 		audio_parts_count: number;
 	};
@@ -308,6 +318,39 @@
 			</div>
 		</div>
 
+		<div class="grid gap-4 sm:grid-cols-3">
+			<div class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+				<p class="text-sm text-slate-500">Aguardando conferência no EVO</p>
+				<p class="mt-2 text-2xl font-bold text-slate-700">
+					{money(dashboard?.payments?.A_CONFERIR.amount_cents)}
+				</p>
+				<p class="text-xs text-slate-400">
+					{dashboard?.payments?.A_CONFERIR.sales ?? 0} vendas · conferidas toda madrugada
+				</p>
+			</div>
+			<div class="rounded-3xl bg-amber-50 p-5 shadow-sm ring-1 ring-amber-200">
+				<p class="text-sm text-amber-800">Pagamento pendente</p>
+				<p class="mt-2 text-2xl font-bold text-amber-700">
+					{money(dashboard?.payments?.PAGAMENTO_PENDENTE.amount_cents)}
+				</p>
+				<p class="text-xs text-amber-700/80">
+					{dashboard?.payments?.PAGAMENTO_PENDENTE.sales ?? 0} vendas lançadas sem recebimento no EVO
+				</p>
+			</div>
+			<div class="rounded-3xl bg-rose-50 p-5 shadow-sm ring-1 ring-rose-200">
+				<p class="text-sm text-rose-800">Não pagas</p>
+				<p class="mt-2 text-2xl font-bold text-rose-700">
+					{money(dashboard?.payments?.NAO_PAGO.amount_cents)}
+				</p>
+				<p class="text-xs text-rose-700/80">
+					{dashboard?.payments?.NAO_PAGO.sales ?? 0} vendas sem pagamento após o prazo
+				</p>
+			</div>
+		</div>
+		<p class="-mt-3 text-xs text-slate-500">
+			Receita, conversões e rankings consideram apenas vendas com pagamento confirmado no EVO.
+		</p>
+
 		<section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
 			<div class="flex items-center justify-between">
 				<h3 class="text-base font-semibold text-slate-900">Evolução temporal</h3>
@@ -432,6 +475,15 @@
 													? ` · ${money(row.amount_cents)}`
 													: ''}</span
 											>
+											{#if row.label_snapshot}
+												<PaymentBadge
+													status={row.payment_status}
+													title={row.payment_check_note ??
+														(row.payment_checked_at
+															? `Conferido em ${dateTime(row.payment_checked_at)}`
+															: null)}
+												/>
+											{/if}
 											{#if row.audio_parts_count > 0}
 												<span
 													class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-100"
