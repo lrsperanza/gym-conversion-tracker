@@ -8,4 +8,5 @@
 !evo-payment-checker/package.json
 !evo-payment-checker/bun.lock
 !evo-payment-checker/src/**
+!evo-payment-checker/entrypoint.sh
 **/*.test.ts

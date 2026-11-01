@@ -344,6 +344,8 @@ export const sales = gym.table(
 		evoClientId: integer('evo_client_id'),
 		evoSaleId: integer('evo_sale_id'),
 		evoPaidCents: integer('evo_paid_cents'),
+		/** Data da venda no EVO; o dashboard soma receita por ela (fallback: `createdAt`). */
+		evoSoldAt: timestamp('evo_sold_at', { withTimezone: true }),
 		createdAt: now
 	},
 	(table) => [

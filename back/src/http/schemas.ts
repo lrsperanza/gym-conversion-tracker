@@ -194,6 +194,7 @@ const hourMinuteSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 
 export const dashboardQuerySchema = z.object({
 	academyId: z.string().uuid().optional(),
+	receptionistId: z.string().uuid().optional(),
 	from: z.string().datetime().optional(),
 	to: z.string().datetime().optional(),
 	channel: z.enum(['PRESENCIAL', 'ONLINE']).optional(),

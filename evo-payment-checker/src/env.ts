@@ -28,12 +28,15 @@ export const env = {
 	/** Unidade usada quando a academia não tem `evo_unit_name` cadastrado. */
 	defaultUnit: Bun.env.EVO_DEFAULT_UNIT ?? '',
 	chromePath: Bun.env.EVO_CHROME_PATH ?? '',
-	headless: bool(Bun.env.EVO_HEADLESS, true),
+	/** Padrão: com janela. O Cloudflare do EVO bloqueia Chrome headless. */
+	headless: bool(Bun.env.EVO_HEADLESS, false),
 	timeoutMs: int(Bun.env.EVO_TIMEOUT_MS, 90_000),
 	/** Por quantos dias uma venda pendente é reconferida antes de virar NAO_PAGO. */
 	pendingMaxDays: int(Bun.env.PAYMENT_PENDING_MAX_DAYS, 30),
 	/** Quantos dias antes da venda no tracker uma venda no EVO ainda é aceita. */
-	lookbackDays: int(Bun.env.PAYMENT_LOOKBACK_DAYS, 2),
+	lookbackDays: int(Bun.env.PAYMENT_LOOKBACK_DAYS, 20),
+	/** Quantos dias depois do lançamento uma venda paga no EVO ainda conta (pagamento atrasado). */
+	forwardDays: int(Bun.env.PAYMENT_FORWARD_DAYS, 7),
 	timeZone: Bun.env.GYM_TIMEZONE || 'America/Sao_Paulo',
 	screenshotsDir: Bun.env.EVO_SCREENSHOTS_DIR || 'screenshots'
 } as const;

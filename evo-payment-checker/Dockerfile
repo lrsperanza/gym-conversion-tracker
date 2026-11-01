@@ -4,14 +4,15 @@
 FROM oven/bun:1-debian
 
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends chromium fonts-liberation ca-certificates tzdata \
+	&& apt-get install -y --no-install-recommends chromium xvfb fonts-liberation ca-certificates tzdata \
 	&& rm -rf /var/lib/apt/lists/*
 
 ENV TZ=America/Sao_Paulo \
 	NODE_ENV=production \
 	EVO_CHROME_PATH=/usr/bin/chromium \
-	EVO_HEADLESS=true \
-	EVO_SCREENSHOTS_DIR=/tmp/screenshots
+	EVO_HEADLESS=false \
+	EVO_SCREENSHOTS_DIR=/tmp/screenshots \
+	EVO_LOG_SCREENSHOTS=true
 
 WORKDIR /app
 
@@ -24,6 +25,9 @@ COPY evo-payment-checker/package.json evo-payment-checker/bun.loc[k] ./evo-payme
 RUN cd evo-payment-checker && bun install --production
 
 COPY evo-payment-checker/src ./evo-payment-checker/src
+COPY evo-payment-checker/entrypoint.sh ./evo-payment-checker/entrypoint.sh
+RUN sed -i 's/\r$//' ./evo-payment-checker/entrypoint.sh && chmod +x ./evo-payment-checker/entrypoint.sh
 
 WORKDIR /app/evo-payment-checker
-CMD ["bun", "src/check.ts"]
+# Chrome com janela numa tela virtual (Xvfb): o Cloudflare do EVO bloqueia o headless.
+ENTRYPOINT ["/app/evo-payment-checker/entrypoint.sh"]

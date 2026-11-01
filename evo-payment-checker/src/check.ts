@@ -7,7 +7,7 @@
  *   --dry-run       não grava nada no banco, só imprime as decisões
  *   --include-today confere também as vendas lançadas hoje
  *   --sale <uuid>   confere uma venda específica (A_CONFERIR ou pendente)
- *   --headed        abre o navegador visível (depuração local)
+ *   --headless      força Chrome headless (o Cloudflare do EVO costuma bloquear)
  */
 import type { Browser } from 'puppeteer-core';
 import {
@@ -25,19 +25,22 @@ import {
 	leadFullName,
 	onlyDigits,
 	pickCandidates,
+	reportCandidates,
 	type EvoClient,
+	type EvoReportRow,
 	type EvoVenda,
 	type MatchSource
 } from './matching.ts';
 
-type Args = { dryRun: boolean; includeToday: boolean; saleId?: string; headed: boolean };
+type Args = { dryRun: boolean; includeToday: boolean; saleId?: string; headless: boolean };
 
 function parseArgs(argv: string[]): Args {
 	const saleIndex = argv.indexOf('--sale');
 	return {
-		dryRun: argv.includes('--dry-run'),
+		// CHECK_DRY_RUN=true permite um dry-run no Cloud Run sem trocar o comando do container.
+		dryRun: argv.includes('--dry-run') || Bun.env.CHECK_DRY_RUN === 'true',
 		includeToday: argv.includes('--include-today'),
-		headed: argv.includes('--headed'),
+		headless: argv.includes('--headless'),
 		saleId: saleIndex >= 0 ? argv[saleIndex + 1] : undefined
 	};
 }
@@ -48,6 +51,7 @@ async function checkSale(
 	session: EvoSession,
 	sale: SaleToCheck,
 	usedEvoSaleIds: Set<number>,
+	report: EvoReportRow[] | null,
 	now: Date
 ) {
 	const lead = {
@@ -58,6 +62,19 @@ async function checkSale(
 		whatsapp: sale.lead_whatsapp
 	};
 
+	const createdAt = new Date(sale.created_at);
+	const windowStart = new Date(createdAt.getTime() - env.lookbackDays * DAY_MS);
+
+	const results: Array<{ source: MatchSource; clients: EvoClient[] }> = [];
+	// 1) Relatório Gerencial › Vendas: comprador + colaborador + dia.
+	if (report) {
+		results.push({
+			source: 'relatorio',
+			clients: reportCandidates(lead, { createdAt, sellerName: sale.seller_name }, report, windowStart)
+		});
+	}
+
+	// 2) Busca do topo do EVO por CPF, e-mail e (se nada achou) nome.
 	const searches: Array<{ source: MatchSource; query: string }> = [];
 	const cpf = onlyDigits(lead.cpf);
 	if (cpf.length === 11) searches.push({ source: 'cpf', query: cpf });
@@ -65,16 +82,14 @@ async function checkSale(
 	const fullName = leadFullName(lead);
 	if (fullName) searches.push({ source: 'nome', query: fullName });
 
-	const results: Array<{ source: MatchSource; clients: EvoClient[] }> = [];
+	const found = () => results.some((result) => result.clients.some((client) => client.idCliente > 0));
 	for (const search of searches) {
+		// Relatório, CPF ou e-mail já acharam alguém: a busca por nome só traria homônimos.
+		if (search.source === 'nome' && found()) break;
 		results.push({ source: search.source, clients: await session.searchClients(search.query) });
-		// CPF/e-mail acharam alguém: a busca por nome só traria ruído (homônimos).
 		if (search.source !== 'nome' && results.at(-1)!.clients.some((client) => client.idCliente > 0)) break;
 	}
 	const candidates = pickCandidates(lead, results);
-
-	const createdAt = new Date(sale.created_at);
-	const windowStart = new Date(createdAt.getTime() - env.lookbackDays * DAY_MS);
 	const vendasByClient = new Map<number, EvoVenda[]>();
 	for (const candidate of candidates.slice(0, 5)) {
 		vendasByClient.set(
@@ -89,6 +104,7 @@ async function checkSale(
 		vendasByClient,
 		usedEvoSaleIds,
 		windowStart,
+		windowEnd: new Date(createdAt.getTime() + env.forwardDays * DAY_MS),
 		now,
 		pendingMaxDays: env.pendingMaxDays
 	});
@@ -96,7 +112,8 @@ async function checkSale(
 
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
-	if (args.headed) (env as { headless: boolean }).headless = false;
+	console.info(`[check] início ${new Date().toISOString()} dryRun=${args.dryRun} headless=${env.headless || args.headless} db=${env.postgres.host}`);
+	if (args.headless) (env as { headless: boolean }).headless = true;
 
 	const sales = await loadSalesToCheck({ includeToday: args.includeToday, saleId: args.saleId });
 	console.info(`[check] ${sales.length} venda(s) para conferir${args.dryRun ? ' (dry-run)' : ''}.`);
@@ -126,15 +143,25 @@ async function main() {
 				continue; // vendas dessa unidade ficam como estão e voltam amanhã
 			}
 
+			// Um relatório só cobrindo da venda mais antiga (menos a folga) até hoje.
+			let report: EvoReportRow[] | null = null;
+			const oldest = Math.min(...unitSales.map((sale) => new Date(sale.created_at).getTime()));
+			try {
+				report = await session.salesReport(new Date(oldest - env.lookbackDays * DAY_MS), new Date());
+			} catch (error) {
+				console.warn('[check] relatório Gerencial › Vendas indisponível; seguindo só com a busca de clientes:', error);
+			}
+
 			try {
 				for (const sale of unitSales) {
 					const now = new Date();
 					try {
-						const decision = await checkSale(session, sale, usedEvoSaleIds, now);
+						const decision = await checkSale(session, sale, usedEvoSaleIds, report, now);
 						if (decision.evoSaleId) usedEvoSaleIds.add(decision.evoSaleId);
 						summary[decision.status as keyof typeof summary] += 1;
 						console.info(
-							`[check] ${sale.id} ${leadFullName({ name: sale.lead_name, surname: sale.lead_surname })} ` +
+							`[check] ${sale.id} ${new Date(sale.created_at).toLocaleDateString('pt-BR', { timeZone: env.timeZone })} ` +
+								`${leadFullName({ name: sale.lead_name, surname: sale.lead_surname })} [${sale.seller_name ?? '?'}] ` +
 								`(${sale.label_snapshot}, ${(sale.amount_cents / 100).toFixed(2)}): ` +
 								`${sale.payment_status} → ${decision.status} — ${decision.note}`
 						);

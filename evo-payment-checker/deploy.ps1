@@ -12,11 +12,16 @@ Deploy do evo-payment-checker como Cloud Run Job + Cloud Scheduler diario.
 .PARAMETER RunNow
 Executa o job uma vez logo depois do deploy (para acompanhar o primeiro run).
 
+.PARAMETER DryRunNow
+Publica o job com CHECK_DRY_RUN=true e executa uma vez: loga as decisoes sem gravar no banco.
+ATENCAO: o job fica em dry-run ate o proximo deploy sem esta flag (-RunNow ou sem flags).
+
 .PARAMETER SkipBuild
 Reaproveita a imagem :latest ja publicada.
 #>
 param(
     [switch]$RunNow,
+    [switch]$DryRunNow,
     [switch]$SkipBuild,
     [string]$Schedule = "0 1 * * *"
 )
@@ -92,6 +97,7 @@ $serviceJson = & $GCLOUD run services describe $BACK_SERVICE --region=$REGION --
 if ($LASTEXITCODE -ne 0) { Fail "Nao foi possivel ler o servico $BACK_SERVICE." }
 $service = $serviceJson | Out-String | ConvertFrom-Json
 $container = $service.spec.template.spec.containers[0]
+Write-Host "Variaveis no servico: $(($container.env | ForEach-Object { $_.name }) -join ', ')"
 $serviceAccount = $service.spec.template.spec.serviceAccountName
 if ([string]::IsNullOrWhiteSpace($serviceAccount)) {
     $projectNumber = (& $GCLOUD projects describe $PROJECT_ID --format="value(projectNumber)").Trim()
@@ -99,12 +105,17 @@ if ([string]::IsNullOrWhiteSpace($serviceAccount)) {
 }
 
 $envFile = Join-Path ([System.IO.Path]::GetTempPath()) "evo-checker-env-$((New-Guid).ToString().Substring(0,8)).yaml"
-$envLines = @("EVO_CHECKER_USER_EMAIL: 'lrsperanza@gmail.com'", "GYM_TIMEZONE: '$TIME_ZONE'")
+# CHECK_DRY_RUN fica gravado no job: -DryRunNow publica com 'true' (inclusive para a
+# execucao das 01:00, se ninguem republicar); qualquer outro deploy volta para 'false'.
+$dryRunValue = if ($DryRunNow) { "true" } else { "false" }
+$envLines = @("EVO_CHECKER_USER_EMAIL: 'lrsperanza@gmail.com'", "GYM_TIMEZONE: '$TIME_ZONE'", "CHECK_DRY_RUN: '$dryRunValue'")
 $secrets = @()
 foreach ($name in $SHARED_ENV) {
     $item = $container.env | Where-Object { $_.name -eq $name } | Select-Object -First 1
     if (-not $item) {
-        if ($name -eq "PostgrePort" -or $name -eq "PostgreSSL") { continue }
+        # Opcionais: ausentes no servico, o back usa os defaults (5432, banco/usuario "postgres", sem SSL);
+        # o job usa os mesmos defaults em src/env.ts.
+        if (@("PostgrePort", "PostgreSSL", "PostgreDatabase", "PostgreUser") -contains $name) { continue }
         Fail "Variavel $name nao encontrada no servico $BACK_SERVICE."
     }
     if ($item.valueFrom -and $item.valueFrom.secretKeyRef) {
@@ -166,9 +177,14 @@ if ($LASTEXITCODE -eq 0) {
 }
 if ($LASTEXITCODE -ne 0) { Fail "Falha ao criar/atualizar o Cloud Scheduler." }
 
-if ($RunNow) {
-    Write-Host "`nExecutando o job agora (aguardando terminar)..."
-    & $GCLOUD run jobs execute $JOB_NAME --region=$REGION --project=$PROJECT_ID --wait
+if ($RunNow -or $DryRunNow) {
+    $executeArgs = @("run", "jobs", "execute", $JOB_NAME, "--region=$REGION", "--project=$PROJECT_ID", "--wait")
+    if ($DryRunNow) {
+        Write-Host "`nExecutando o job agora em DRY-RUN (nao grava no banco)..."
+    } else {
+        Write-Host "`nExecutando o job agora (aguardando terminar)..."
+    }
+    & $GCLOUD @executeArgs
     if ($LASTEXITCODE -ne 0) { Write-Host "O job terminou com erro. Veja os logs abaixo." }
     Write-Host "Logs: gcloud logging read 'resource.type=cloud_run_job AND resource.labels.job_name=$JOB_NAME' --project=$PROJECT_ID --limit=200 --freshness=1h --format='value(textPayload)'"
 }

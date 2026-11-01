@@ -300,7 +300,14 @@ export type DashboardSummary = {
 	kpi: {
 		attendances: number;
 		converted: number;
+		/** Vendas pagas cuja data no EVO cai no período (base da receita). */
+		sales: number;
+		/** Receita = venda EVO + bônus de venda de recorrente. */
 		revenue_cents: number;
+		/** Valor efetivamente pago no EVO. */
+		evo_revenue_cents: number;
+		/** Mensalidade extra creditada por venda de plano recorrente (não está no EVO). */
+		recurring_bonus_cents: number;
 		conversionRate: number;
 	};
 	receptionists: MetricRow[];
@@ -312,7 +319,13 @@ export type DashboardSummary = {
 			professor_global_conversion_rate: number;
 		}
 	>;
-	closers: Array<{ id: string; name: string; sales: number; revenue_cents: number }>;
+	closers: Array<{
+		id: string;
+		name: string;
+		sales: number;
+		revenue_cents: number;
+		recurring_bonus_cents: number;
+	}>;
 	payments: Record<SalePaymentStatus, { sales: number; amount_cents: number }>;
 	timeline: MetricRow[];
 };
@@ -324,5 +337,7 @@ export type MetricRow = {
 	attendances: number;
 	converted: number;
 	revenue_cents: number;
+	/** Parte de `revenue_cents` que é bônus de venda de recorrente. */
+	recurring_bonus_cents: number;
 	conversionRate: number;
 };

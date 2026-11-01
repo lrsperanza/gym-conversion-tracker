@@ -11,6 +11,7 @@ export const sql = postgres({
 	password: env.postgres.password,
 	ssl: env.postgres.ssl ? { rejectUnauthorized: false } : false,
 	max: 2,
+	connect_timeout: 30,
 	prepare: false
 });
 
@@ -51,6 +52,8 @@ export type SaleToCheck = {
 	lead_cpf: string | null;
 	lead_email: string | null;
 	lead_whatsapp: string | null;
+	/** Usuário do tracker que registrou a venda — no EVO é o "Colaborador venda". */
+	seller_name: string | null;
 };
 
 /**
@@ -74,8 +77,10 @@ export async function loadSalesToCheck(options: { includeToday: boolean; saleId?
 			l."surname" AS lead_surname,
 			l."cpf" AS lead_cpf,
 			l."email" AS lead_email,
-			l."whatsapp_e164" AS lead_whatsapp
+			l."whatsapp_e164" AS lead_whatsapp,
+			u."name" AS seller_name
 		FROM "gym-conversion-tracker"."sales" s
+		LEFT JOIN "gym-conversion-tracker"."users" u ON u."id" = s."sold_by_user_id"
 		JOIN "gym-conversion-tracker"."attendances" a ON a."id" = s."attendance_id"
 		JOIN "gym-conversion-tracker"."academies" ac ON ac."id" = a."academy_id"
 		JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
@@ -108,6 +113,7 @@ export type SaleUpdate = {
 	evoClientId?: number | null;
 	evoSaleId?: number | null;
 	evoPaidCents?: number | null;
+	evoSoldAt?: Date | null;
 };
 
 export async function saveSaleCheck(saleId: string, update: SaleUpdate): Promise<void> {
@@ -120,7 +126,8 @@ export async function saveSaleCheck(saleId: string, update: SaleUpdate): Promise
 			"payment_confirmed_at" = CASE WHEN ${update.status} = 'PAGO' THEN now() ELSE "payment_confirmed_at" END,
 			"evo_client_id" = COALESCE(${update.evoClientId ?? null}::int, "evo_client_id"),
 			"evo_sale_id" = ${update.evoSaleId ?? null}::int,
-			"evo_paid_cents" = ${update.evoPaidCents ?? null}::int
+			"evo_paid_cents" = ${update.evoPaidCents ?? null}::int,
+			"evo_sold_at" = ${update.evoSoldAt?.toISOString() ?? null}::timestamptz
 		WHERE "id" = ${saleId}
 	`;
 }

@@ -46,7 +46,16 @@
 								</div>
 								<span class="text-xs text-slate-500">{percent(row.conversionRate)}</span>
 							</td>
-							<td class="py-3 pr-4">{money(row.revenue_cents)}</td>
+							<td class="py-3 pr-4">
+								{money(row.revenue_cents)}
+								{#if row.recurring_bonus_cents}
+									<span class="block text-xs text-violet-600">
+										{money(row.revenue_cents - row.recurring_bonus_cents)} EVO + {money(
+											row.recurring_bonus_cents
+										)} bônus
+									</span>
+								{/if}
+							</td>
 							<td class="py-3 pr-4">{money(revenuePerVisit(row))}</td>
 							<td class="py-3">{money(revenuePerSale(row))}</td>
 						</tr>

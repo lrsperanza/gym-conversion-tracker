@@ -1,5 +1,16 @@
 import { describe, expect, test } from 'bun:test';
-import { decide, nameMatches, parseEvoDate, pickCandidates, type EvoClient, type EvoVenda, type Lead } from './matching.ts';
+import {
+	decide,
+	nameMatches,
+	parseEvoDate,
+	pickCandidates,
+	reportCandidates,
+	sellerMatches,
+	type EvoClient,
+	type EvoReportRow,
+	type EvoVenda,
+	type Lead
+} from './matching.ts';
 
 const lead: Lead = {
 	name: 'Janderson',
@@ -85,6 +96,7 @@ describe('decide', () => {
 		expect(decision.status).toBe('PAGO');
 		expect(decision.evoSaleId).toBe(18653404);
 		expect(decision.evoPaidCents).toBe(16990);
+		expect(decision.evoSoldAt?.toISOString()).toBe('2026-10-23T09:43:00.000Z');
 	});
 
 	test('venda EVO já usada por outro lançamento não confirma de novo', () => {
@@ -140,4 +152,60 @@ describe('decide', () => {
 
 test('parseEvoDate assume horário de Brasília', () => {
 	expect(parseEvoDate('2026-10-23T06:43:00').toISOString()).toBe('2026-10-23T09:43:00.000Z');
+});
+
+describe('relatório Gerencial › Vendas', () => {
+	const row = (over: Partial<EvoReportRow>): EvoReportRow => ({
+		ID_VENDA: 18713584,
+		ID_COMPRADOR: 3959025,
+		NOME_COMPRADOR: 'LINDAIR PAULO',
+		APELIDO: 'DE GODOI MATSUMOTO',
+		ID_FUNCIONARIO_VENDA: 14500,
+		NOME_FUNCIONARIO_VENDA: 'HELOISE FRANCELINO ID: 14500',
+		VALOR_VENDA: 109.9,
+		FORMA_PAGAMENTO: 'Cartão de crédito online',
+		DT_VENDA: '2026-10-26T14:37:45',
+		...over
+	});
+	const sale = { createdAt: new Date('2026-10-26T17:50:00Z'), sellerName: 'Heloise' };
+	const windowStart = new Date('2026-10-24T00:00:00Z');
+	const ids = (clients: EvoClient[]) => clients.map((client) => client.idCliente);
+
+	test('colaborador casa pelo primeiro nome, sem o sufixo de ID', () => {
+		expect(sellerMatches('Heloise Francelino', 'HELOISE FRANCELINO ID: 14500')).toBe(true);
+		expect(sellerMatches('André', 'ANDRE ALVES DOS SANTOS ID: 14501')).toBe(true);
+		expect(sellerMatches('Heloise', 'ANDRE ALVES DOS SANTOS ID: 14501')).toBe(false);
+	});
+
+	test('nome completo do lead dentro de nome + apelido do comprador', () => {
+		const lead = { name: 'Lindair', surname: 'Matsumoto', cpf: null, email: null, whatsapp: null };
+		expect(ids(reportCandidates(lead, sale, [row({})], windowStart))).toEqual([3959025]);
+	});
+
+	test('só o primeiro nome vale com mesmo colaborador no mesmo dia', () => {
+		const lead = { name: 'Lindair', surname: null, cpf: null, email: null, whatsapp: null };
+		expect(ids(reportCandidates(lead, sale, [row({})], windowStart))).toEqual([3959025]);
+		expect(ids(reportCandidates(lead, { ...sale, sellerName: 'Andre' }, [row({})], windowStart))).toEqual([]);
+		expect(ids(reportCandidates(lead, sale, [row({ DT_VENDA: '2026-10-25T14:37:45' })], windowStart))).toEqual([]);
+	});
+
+	test('relatório tem prioridade sobre busca por nome', () => {
+		const lead = { name: 'Lindair', surname: 'Paulo', cpf: null, email: null, whatsapp: null };
+		const result = pickCandidates(lead, [
+			{ source: 'relatorio', clients: [client(3959025, 'LINDAIR PAULO DE GODOI MATSUMOTO')] },
+			{ source: 'nome', clients: [client(7, 'Lindair Paulo')] }
+		]);
+		expect(ids(result.map((candidate) => candidate.client))).toEqual([3959025]);
+	});
+});
+
+test('venda no EVO muito depois do lançamento não confirma (renovação do mês seguinte)', () => {
+	const decision = decide({
+		...base,
+		windowEnd: new Date('2026-10-30T09:50:00Z'),
+		now: new Date('2026-11-20T04:00:00Z'),
+		candidates: [{ client: client(1, 'Janderson Trindade'), source: 'nome' }],
+		vendasByClient: new Map([[1, [{ ...vendaPaga, dtVenda: '2026-11-20T10:00:00' }]]])
+	});
+	expect(decision.status).toBe('PAGAMENTO_PENDENTE');
 });

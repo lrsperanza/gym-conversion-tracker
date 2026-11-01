@@ -45,6 +45,7 @@
 	const { session } = getSessionContext();
 
 	let academies = $state.raw<Academy[]>([]);
+	let receptionists = $state.raw<Array<{ id: string; name: string }>>([]);
 	let dashboard = $state.raw<DashboardSummary | null>(null);
 	let auditRows = $state.raw<AuditRow[]>([]);
 	let dashboardLoading = $state(false);
@@ -53,6 +54,7 @@
 
 	let dashboardFilter = $state({
 		academyId: '',
+		receptionistId: '',
 		from: '',
 		fromTime: '',
 		to: '',
@@ -67,7 +69,7 @@
 		dashboard?.kpi.attendances ? dashboard.kpi.revenue_cents / dashboard.kpi.attendances : 0
 	);
 	let revenuePerSale = $derived(
-		dashboard?.kpi.converted ? dashboard.kpi.revenue_cents / dashboard.kpi.converted : 0
+		dashboard?.kpi.sales ? dashboard.kpi.revenue_cents / dashboard.kpi.sales : 0
 	);
 	let timelineMax = $derived.by(() =>
 		Math.max(1, ...(dashboard?.timeline ?? []).map((row) => row.attendances))
@@ -106,11 +108,32 @@
 			if (!dashboardFilter.academyId && activeAcademies.length === 1) {
 				dashboardFilter.academyId = activeAcademies[0].id;
 			}
-			await loadDashboardSummary();
+			await Promise.all([loadReceptionists(), loadDashboardSummary()]);
 		} catch (error) {
 			dashboardMessage = errorMessage(error);
 		} finally {
 			dashboardLoading = false;
+		}
+	}
+
+	async function loadReceptionists() {
+		const data = await api<{ receptionists: Array<{ id: string; name: string }> }>(
+			`/api/dashboard/receptionists${queryString({ academyId: dashboardFilter.academyId })}`
+		);
+		receptionists = data.receptionists;
+		if (
+			dashboardFilter.receptionistId &&
+			!receptionists.some((receptionist) => receptionist.id === dashboardFilter.receptionistId)
+		) {
+			dashboardFilter.receptionistId = '';
+		}
+	}
+
+	async function onAcademyChange() {
+		try {
+			await loadReceptionists();
+		} catch (error) {
+			dashboardMessage = errorMessage(error);
 		}
 	}
 
@@ -136,6 +159,7 @@
 	async function loadDashboardSummary() {
 		const filter = queryString({
 			academyId: dashboardFilter.academyId,
+			receptionistId: dashboardFilter.receptionistId,
 			from: dateToIso(dashboardFilter.from, false, dashboardFilter.fromTime),
 			to: dateToIso(dashboardFilter.to, true, dashboardFilter.toTime),
 			channel: dashboardFilter.channel,
@@ -181,10 +205,23 @@
 						<select
 							class="mt-1 w-full rounded-2xl border-slate-300"
 							bind:value={dashboardFilter.academyId}
+							onchange={() => void onAcademyChange()}
 						>
 							<option value="">Todas</option>
 							{#each academies as academy (academy.id)}
 								<option value={academy.id}>{academy.name}</option>
+							{/each}
+						</select>
+					</label>
+					<label class="text-sm font-medium text-slate-700">
+						Recepcionista
+						<select
+							class="mt-1 w-full rounded-2xl border-slate-300"
+							bind:value={dashboardFilter.receptionistId}
+						>
+							<option value="">Todas</option>
+							{#each receptionists as receptionist (receptionist.id)}
+								<option value={receptionist.id}>{receptionist.name}</option>
 							{/each}
 						</select>
 					</label>
@@ -293,6 +330,22 @@
 			<div class="rounded-3xl bg-slate-950 p-5 text-white shadow-sm">
 				<p class="text-sm text-slate-300">Receita</p>
 				<p class="mt-2 text-3xl font-bold">{money(dashboard?.kpi.revenue_cents)}</p>
+				<dl class="mt-3 space-y-1 text-sm">
+					<div class="flex justify-between gap-3">
+						<dt class="text-slate-300">Vendas EVO</dt>
+						<dd class="font-semibold">{money(dashboard?.kpi.evo_revenue_cents)}</dd>
+					</div>
+					<div class="flex justify-between gap-3">
+						<dt class="text-violet-300">Bônus de venda de recorrente</dt>
+						<dd class="font-semibold text-violet-200">
+							{money(dashboard?.kpi.recurring_bonus_cents)}
+						</dd>
+					</div>
+				</dl>
+				<p class="mt-2 text-xs text-slate-400">
+					Vendas EVO: valor pago e data da venda no EVO. Bônus: plano recorrente conta em dobro (o
+					EVO cobra só a 1ª mensalidade).
+				</p>
 			</div>
 			<div class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
 				<p class="text-sm text-slate-500">Taxa de conversão</p>
@@ -413,7 +466,14 @@
 									Professor global:
 									{percent(pair.professor_global_conversion_rate)}
 								</p>
-								<p class="text-sm font-medium text-slate-900">{money(pair.revenue_cents)}</p>
+								<p class="text-sm font-medium text-slate-900">
+									{money(pair.revenue_cents)}
+									{#if pair.recurring_bonus_cents}
+										<span class="text-xs font-normal text-violet-600">
+											(inclui {money(pair.recurring_bonus_cents)} de bônus recorrente)
+										</span>
+									{/if}
+								</p>
 							</div>
 						{/each}
 					</div>
@@ -432,7 +492,14 @@
 									<p class="font-semibold text-slate-900">{closer.name}</p>
 									<p class="text-sm text-slate-500">{closer.sales} vendas fechadas</p>
 								</div>
-								<p class="font-bold text-slate-950">{money(closer.revenue_cents)}</p>
+								<div class="text-right">
+									<p class="font-bold text-slate-950">{money(closer.revenue_cents)}</p>
+									{#if closer.recurring_bonus_cents}
+										<p class="text-xs text-violet-600">
+											inclui {money(closer.recurring_bonus_cents)} de bônus recorrente
+										</p>
+									{/if}
+								</div>
 							</div>
 						{/each}
 					</div>

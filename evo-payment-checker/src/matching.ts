@@ -42,7 +42,25 @@ export type Lead = {
 	whatsapp: string | null;
 };
 
-export type MatchSource = 'cpf' | 'email' | 'nome';
+export type MatchSource = 'cpf' | 'email' | 'relatorio' | 'nome';
+
+/**
+ * Linha de `POST evo3…/Gerencial/Vendas/listarVendas` (Gerencial › Vendas,
+ * tipo "Contrato"). `NOME_COMPRADOR` traz o(s) primeiro(s) nome(s) e
+ * `APELIDO` o sobrenome; `DT_VENDA` vem no horário da unidade, sem fuso.
+ */
+export type EvoReportRow = {
+	ID_VENDA: number;
+	ID_COMPRADOR: number;
+	NOME_COMPRADOR: string | null;
+	APELIDO: string | null;
+	ID_FUNCIONARIO_VENDA: number | null;
+	NOME_FUNCIONARIO_VENDA: string | null;
+	VALOR_VENDA: number | null;
+	FORMA_PAGAMENTO: string | null;
+	DT_VENDA: string;
+	TIPO_COMPRADOR?: string | null;
+};
 export type Candidate = { client: EvoClient; source: MatchSource };
 
 const STOPWORDS = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
@@ -83,6 +101,58 @@ export function nameMatches(lead: Lead, client: EvoClient): boolean {
 	return phoneMatches(lead.whatsapp, client.telefoneAtual);
 }
 
+/** "HELOISE FRANCELINO ID: 14500" → tokens do nome, sem o sufixo de ID. */
+export function sellerTokens(value: string | null | undefined): string[] {
+	return nameTokens((value ?? '').replace(/\bID:\s*\d+\s*$/i, ''));
+}
+
+/** O colaborador do tracker costuma ter só o primeiro nome cadastrado; o primeiro token decide. */
+export function sellerMatches(trackerSeller: string | null | undefined, evoSeller: string | null | undefined): boolean {
+	const a = sellerTokens(trackerSeller);
+	const b = sellerTokens(evoSeller);
+	return a.length > 0 && b.length > 0 && a[0] === b[0];
+}
+
+export function reportBuyerName(row: EvoReportRow): string {
+	return [row.NOME_COMPRADOR, row.APELIDO].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+const sameDay = (a: Date, b: Date) =>
+	a.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }) ===
+	b.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+
+/**
+ * Vendas do relatório Gerencial › Vendas que podem ser deste lead:
+ * - nome completo do lead contido no nome do comprador; ou
+ * - mesmo primeiro nome, mesmo colaborador da venda e mesmo dia (lead
+ *   cadastrado só com o primeiro nome, ou com sobrenome diferente).
+ * Linhas fora de [windowStart, ∞) são ignoradas.
+ */
+export function reportCandidates(
+	lead: Lead,
+	sale: { createdAt: Date; sellerName: string | null },
+	rows: EvoReportRow[],
+	windowStart: Date
+): EvoClient[] {
+	const leadTokens = nameTokens(leadFullName(lead));
+	if (leadTokens.length === 0) return [];
+	const clients = new Map<number, EvoClient>();
+	for (const row of rows) {
+		if (!row.ID_COMPRADOR) continue;
+		const date = parseEvoDate(row.DT_VENDA);
+		if (date < windowStart) continue;
+		const client: EvoClient = { idCliente: row.ID_COMPRADOR, idProspect: 0, nomeCompleto: reportBuyerName(row) };
+		const buyerTokens = new Set(nameTokens(client.nomeCompleto));
+		const fullName = leadTokens.length >= 2 && leadTokens.every((token) => buyerTokens.has(token));
+		const firstNameSameSellerSameDay =
+			buyerTokens.has(leadTokens[0]!) &&
+			sellerMatches(sale.sellerName, row.NOME_FUNCIONARIO_VENDA) &&
+			sameDay(date, sale.createdAt);
+		if (fullName || firstNameSameSellerSameDay) clients.set(client.idCliente, client);
+	}
+	return [...clients.values()];
+}
+
 /**
  * Junta os resultados das buscas (CPF, e-mail, nome) em candidatos únicos.
  * CPF e e-mail são confiáveis por si; nome precisa casar todos os tokens.
@@ -100,8 +170,10 @@ export function pickCandidates(lead: Lead, results: Array<{ source: MatchSource;
 	}
 
 	const candidates = [...byId.values()];
-	const strong = candidates.filter((candidate) => candidate.source !== 'nome');
+	const strong = candidates.filter((candidate) => candidate.source === 'cpf' || candidate.source === 'email');
 	if (strong.length > 0) return strong;
+	const fromReport = candidates.filter((candidate) => candidate.source === 'relatorio');
+	if (fromReport.length > 0) return fromReport;
 
 	const byPhone = candidates.filter((candidate) => phoneMatches(lead.whatsapp, candidate.client.telefoneAtual));
 	return byPhone.length > 0 ? byPhone : candidates;
@@ -126,6 +198,8 @@ export type Decision = {
 	evoClientId: number | null;
 	evoSaleId: number | null;
 	evoPaidCents: number | null;
+	/** `dtVenda` da venda do EVO que confirmou o pagamento. */
+	evoSoldAt: Date | null;
 };
 
 export type DecisionInput = {
@@ -135,6 +209,8 @@ export type DecisionInput = {
 	vendasByClient: Map<number, EvoVenda[]>;
 	usedEvoSaleIds: Set<number>;
 	windowStart: Date;
+	/** Venda no EVO depois disso já é outra compra (ex.: renovação do mês seguinte). */
+	windowEnd?: Date;
 	now: Date;
 	pendingMaxDays: number;
 };
@@ -151,10 +227,11 @@ export function decide(input: DecisionInput): Decision {
 	if (candidates.length === 0) {
 		return {
 			status: unpaidStatus,
-			note: `Cliente não encontrado no EVO (busca por CPF, e-mail e nome).${prazo}`,
+			note: `Cliente não encontrado no EVO (relatório de vendas, CPF, e-mail e nome).${prazo}`,
 			evoClientId: null,
 			evoSaleId: null,
-			evoPaidCents: null
+			evoPaidCents: null,
+			evoSoldAt: null
 		};
 	}
 
@@ -164,6 +241,7 @@ export function decide(input: DecisionInput): Decision {
 		for (const venda of vendasByClient.get(client.idCliente) ?? []) {
 			const date = parseEvoDate(venda.dtVenda);
 			if (date < windowStart) continue;
+			if (input.windowEnd && date > input.windowEnd) continue;
 			options.push({ clientId: client.idCliente, venda, date });
 		}
 	}
@@ -188,7 +266,8 @@ export function decide(input: DecisionInput): Decision {
 				'.',
 			evoClientId: best.clientId,
 			evoSaleId: best.venda.idVenda,
-			evoPaidCents: Math.round(best.venda.valorPago * 100)
+			evoPaidCents: Math.round(best.venda.valorPago * 100),
+			evoSoldAt: best.date
 		};
 	}
 
@@ -199,12 +278,13 @@ export function decide(input: DecisionInput): Decision {
 			? `venda EVO #${open[0]!.venda.idVenda} em aberto (${money(open[0]!.venda.valorPagar)} a pagar)`
 			: options.length > 0
 				? 'vendas no EVO já usadas por outros lançamentos ou sem valor'
-				: `nenhuma venda no EVO desde ${day(windowStart)}`;
+				: `nenhuma venda no EVO entre ${day(windowStart)} e ${day(input.windowEnd ?? input.now)}`;
 	return {
 		status: unpaidStatus,
 		note: `Cliente EVO ${ids}: ${detail}.${prazo}`,
 		evoClientId: candidates.length === 1 ? candidates[0]!.client.idCliente : null,
 		evoSaleId: null,
-		evoPaidCents: null
+		evoPaidCents: null,
+		evoSoldAt: null
 	};
 }
