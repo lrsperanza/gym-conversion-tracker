@@ -3082,7 +3082,6 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-single-instance",
  "ureq",
- "webview2-com",
  "windows-sys 0.61.2",
  "zstd",
 ]

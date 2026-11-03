@@ -15,7 +15,6 @@ tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-single-instance = "2"
 tar = "0.4"
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
-webview2-com = "0.38.2"
 zstd = "0.13"
 
 [target.'cfg(windows)'.dependencies]

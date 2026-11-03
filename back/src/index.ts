@@ -14,7 +14,6 @@ import { clipRoutes } from './routes/clips';
 import { dashboardRoutes } from './routes/dashboard';
 import { desktopRoutes } from './routes/desktop';
 import { evoRoutes } from './routes/evo';
-import { audioRoutes } from './routes/audio';
 
 const app = new Hono<AppBindings>();
 const allowedOrigins = env.corsOrigin.split(',').map((origin) => origin.trim());
@@ -34,7 +33,7 @@ app.use(
 		origin: (origin) => (allowAllOrigins ? origin : allowedOrigins.includes(origin) ? origin : undefined),
 		credentials: true,
 		allowHeaders: ['Content-Type', 'Range'],
-		exposeHeaders: ['Accept-Ranges', 'Content-Range', 'Content-Length', 'Date'],
+		exposeHeaders: ['Accept-Ranges', 'Content-Range', 'Content-Length'],
 		allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 	})
 );
@@ -90,7 +89,6 @@ app.route('/api/admin', cameraAdminRoutes);
 app.route('/api/evo', evoRoutes);
 app.route('/api/desktop', desktopRoutes);
 app.route('/api', clipRoutes);
-app.route('/api', audioRoutes);
 app.route('/api', attendanceRoutes);
 app.route('/api', dashboardRoutes);
 

@@ -4,7 +4,6 @@
 	import { copyEvoData } from '$lib/evo-copy';
 	import { evoApi, evoAvailable } from '$lib/api/evo';
 	import { describeError, evoError, evoLog, openEvoDiagnostics } from '$lib/api/evo-log.svelte';
-	import { nudgeAudioUploader } from '$lib/audio/uploader';
 	import { asCents, errorMessage, eventTypeLabel } from '$lib/helpers';
 	import type {
 		Attendance,
@@ -392,7 +391,6 @@
 				method: 'POST',
 				body: JSON.stringify(payload)
 			});
-			nudgeAudioUploader();
 			eventForm = createForm();
 			await onSaved();
 			message = '';

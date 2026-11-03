@@ -39,7 +39,6 @@
 		payment_checked_at?: string | null;
 		payment_check_note?: string | null;
 		loss_reason?: string | null;
-		audio_parts_count: number;
 	};
 
 	const { session } = getSessionContext();
@@ -550,12 +549,6 @@
 															? `Conferido em ${dateTime(row.payment_checked_at)}`
 															: null)}
 												/>
-											{/if}
-											{#if row.audio_parts_count > 0}
-												<span
-													class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-100"
-													>Áudio disponível</span
-												>
 											{/if}
 										</div>
 									</td>

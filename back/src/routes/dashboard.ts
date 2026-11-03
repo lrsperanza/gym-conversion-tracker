@@ -243,14 +243,7 @@ dashboardRoutes.get('/dashboard/audit', async (c) => {
 				s."payment_checked_at",
 				s."payment_check_note",
 				lr."label" AS loss_reason,
-				lr."category" AS loss_category,
-				(
-					SELECT COUNT(*)::int
-					FROM "gym-conversion-tracker"."attendance_audio_parts" ap
-					WHERE ap."attendance_id" = a."id"
-						AND ap."superseded_at" IS NULL
-						AND ap."status" = 'UPLOADED'
-				) AS audio_parts_count
+				lr."category" AS loss_category
 			FROM "gym-conversion-tracker"."attendances" a
 			JOIN "gym-conversion-tracker"."leads" l ON l."id" = a."lead_id"
 			JOIN "gym-conversion-tracker"."users" u ON u."id" = a."receptionist_id"
