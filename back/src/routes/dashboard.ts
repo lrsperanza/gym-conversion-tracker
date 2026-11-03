@@ -230,6 +230,7 @@ dashboardRoutes.get('/dashboard/audit', async (c) => {
 		FROM (
 			SELECT DISTINCT ON (a."id")
 				a."id" AS attendance_id,
+				a."academy_id",
 				a."started_at",
 				a."closed_at",
 				a."status",

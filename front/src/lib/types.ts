@@ -274,3 +274,40 @@ export type MetricRow = {
 	recurring_bonus_cents: number;
 	conversionRate: number;
 };
+
+export type AudioConfig = {
+	enabled: boolean;
+	segmentSeconds: number;
+	retentionDays: number;
+	serverTime: string;
+};
+
+export type AudioSegment = {
+	id: string;
+	userId: string;
+	userName: string | null;
+	deviceId: string;
+	deviceLabel: string | null;
+	startedAt: string;
+	endedAt: string;
+	durationMs: number;
+	sizeBytes: number;
+	mime: string;
+};
+
+export type AudioTimelineAttendance = {
+	id: string;
+	startedAt: string;
+	closedAt: string | null;
+	status: Attendance['status'];
+	leadName: string;
+	receptionistId: string;
+	receptionistName: string;
+};
+
+export type AudioTimeline = {
+	segments: AudioSegment[];
+	attendances: AudioTimelineAttendance[];
+	truncated: boolean;
+	retentionDays: number;
+};

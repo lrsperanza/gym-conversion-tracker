@@ -421,3 +421,27 @@ export const auditLogs = gym.table(
 	(table) => [index('audit_logs_entity_idx').on(table.entityType, table.entityId), index('audit_logs_created_idx').on(table.createdAt)]
 );
 
+
+/** Trechos de ~1 min da gravação contínua da recepção. O áudio vive no GCS (apagado após 30 dias). */
+export const audioSegments = gym.table(
+	'audio_segments',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		academyId: uuid('academy_id'),
+		userId: uuid('user_id').notNull(),
+		deviceId: text('device_id').notNull(),
+		deviceLabel: text('device_label'),
+		startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+		endedAt: timestamp('ended_at', { withTimezone: true }).notNull(),
+		durationMs: integer('duration_ms').notNull(),
+		objectName: text('object_name').notNull(),
+		mime: text('mime').notNull(),
+		sizeBytes: integer('size_bytes').notNull(),
+		createdAt: now
+	},
+	(table) => [
+		uniqueIndex('audio_segments_device_started_idx').on(table.deviceId, table.startedAt),
+		index('audio_segments_academy_started_idx').on(table.academyId, table.startedAt),
+		index('audio_segments_started_idx').on(table.startedAt)
+	]
+);

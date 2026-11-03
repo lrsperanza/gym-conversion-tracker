@@ -8,7 +8,7 @@ Contexto do monorepo: [`../gym-conversion-tracker-workspace/AGENTS.md`](../gym-c
 
 Tauri **v2** (`tauri 2.11.5`), Rust edition 2021, pacote `skyfit-evo-desktop`. Produto `Skyfit EVO`, identificador `com.skyfit.evo`.
 
-Toda a lógica está em `src-tauri/src/main.rs` (~700 linhas) mais `src-tauri/build.rs`. Crates relevantes: `tauri-plugin-single-instance`, `ureq` (update), `sha2`/`hex` (integridade), `tar`/`zstd` (payload), `serde`.
+Toda a lógica está em `src-tauri/src/main.rs` (~700 linhas) mais `src-tauri/build.rs`. Crates relevantes: `tauri-plugin-single-instance`, `ureq` (update), `sha2`/`hex` (integridade), `tar`/`zstd` (payload), `serde`, `webview2-com` (permissão de microfone no WebView2).
 
 Pontos do `tauri.conf.json` que costumam surpreender:
 
@@ -27,6 +27,8 @@ Pontos do `tauri.conf.json` que costumam surpreender:
 4. `extract_payload()`: descomprime o `payload.tar.zst` embutido via `include_bytes!` para `%LOCALAPPDATA%\SkyfitEVO\runtime\{APP_VERSION}\`, guardando o marcador `.complete` com `SKYFIT_PAYLOAD_FINGERPRINT`. Timeout de 180s a frio, 45s a quente.
 5. `spawn_bridge()`: roda `bridge.exe` sem janela de console, com `BRIDGE_PORT`, `BACK_URL`, `FRONT_URL`, `DESKTOP_APP_VERSION`, `DESKTOP_PID`, `EVO_PERFIS_DIR`, `EVO_SCREENSHOTS_DIR`. Logs em `%LOCALAPPDATA%\SkyfitEVO\data\logs\bridge.{out,err}.log`.
 6. `wait_for_local_bridge()`: se subir, janela principal em `http://localhost:4000`. Se não, mostra erro no splash por 5s e cai para `configured_front_url()` (o SWA remoto) — **nesse modo o EVO não funciona**, porque não há bridge local. `watch_for_late_bridge()` ainda pode redirecionar a janela de volta para localhost por até 300s.
+
+`open_main_window()` desativa o background throttling da WebView (timers e `MediaRecorder` seguem com a janela minimizada) e registra um handler WebView2 que libera o microfone automaticamente **só** para `http://localhost:4000` / `127.0.0.1:4000`. É requisito da gravação contínua do front (auditoria de áudio).
 
 O `back` **não** é iniciado pelo desktop; ele sempre usa a API remota. Ao sair, `kill_bridge()` derruba o filho — mas só bridges que **esta** instância spawneou: o relaunch do update usa `taskkill /F`, que não roda o handler de saída, então o bridge sobrevive órfão (é por isso que o passo 3 do boot evita adotar órfãos de outra versão). O Chrome do EVO é lançado destacado pelo bridge e continua aberto para preservar a sessão; no próximo start o bridge reconecta a essa janela. Segunda instância apenas foca a janela existente.
 
@@ -51,7 +53,7 @@ cd desktop
 
 `build.ps1` valida `bun`/`cargo`/`cargo tauri` v2, instala deps de `evo-puppeteer` e `evo-bridge`, roda typecheck, compila o `bridge.exe` no payload, gera ícones, faz `cargo tauri build` com `SKYFIT_BACK_URL`/`SKYFIT_FRONT_URL` no ambiente e copia o resultado para `desktop/dist/Skyfit-EVO-{version}.exe` (+ zip + `LEIA-ME.txt`).
 
-`publish.ps1` lê a versão de `tauri.conf.json` **e** `Cargo.toml` (precisam bater), oferece bump, sincroniza os dois arquivos, pergunta se deve buildar (a menos que venha `-Build`/`-NoBuild`/`-NoPrompt`) e então roda `bun src/scripts/publish-desktop.ts <exe>` **de dentro de `back/`** — ou seja, quem publica usa `back/.env` (`AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY`, `DESKTOP_BLOB_CONTAINER`, `DESKTOP_BUILD_PREFIX`), **não** o `desktop/.env`. O nome do arquivo precisa casar `{DESKTOP_BUILD_PREFIX}{semver}.exe`, senão o script recusa.
+`publish.ps1` lê a versão de `tauri.conf.json` **e** `Cargo.toml` (precisam bater), oferece bump, sincroniza os dois arquivos, pergunta se deve buildar (a menos que venha `-Build`/`-NoBuild`/`-NoPrompt`) e então roda `bun src/scripts/publish-desktop.ts <exe>` **de dentro de `back/`** — ou seja, quem publica usa `back/.env` (`DESKTOP_GCS_BUCKET`, `DESKTOP_BUILD_PREFIX`), com `desktop/.env` aplicado por cima pelo `publish.ps1`. O upload autentica com a conta logada no `gcloud` (precisa escrever no bucket `gym-conversion-tracker-desktop`). O nome do arquivo precisa casar `{DESKTOP_BUILD_PREFIX}{semver}.exe`, senão o script recusa.
 
 Não há CI: build e publish são manuais.
 
@@ -64,13 +66,13 @@ Dois caminhos, mesma origem de verdade:
 | Startup (Rust) | Todo lançamento, antes do bridge | `maybe_apply_update()` em `main.rs` |
 | Em uso (bridge) | Pelo front | `POST /evo/apply-update` → `evo-bridge/src/update.ts` |
 
-Ambos consultam `GET {back}/api/desktop/latest`, que lista os blobs do Azure pelo prefixo, ordena por semver e devolve `{ version, fileName, size, publishedAt, sha256, downloadUrl }` com SAS de leitura de 30 min. Baixam para `%LOCALAPPDATA%\SkyfitEVO\app\`, conferem o SHA256, refazem o atalho e relançam com `taskkill` + `start`. Se o exe de destino já existe com o SHA256 igual ao publicado (download anterior cujo relaunch não aconteceu), os dois caminhos pulam o download e vão direto para atalho + relaunch — renomear sobre o exe em execução falharia com EPERM no Windows.
+Ambos consultam `GET {back}/api/desktop/latest`, que lista os objetos do bucket GCS pelo prefixo, ordena por semver e devolve `{ version, fileName, size, publishedAt, sha256, downloadUrl }` com a URL pública `https://storage.googleapis.com/<bucket>/<arquivo>`. Os clientes só seguem a `downloadUrl`, então trocar o storage não exige build novo do desktop. Baixam para `%LOCALAPPDATA%\SkyfitEVO\app\`, conferem o SHA256, refazem o atalho e relançam com `taskkill` + `start`. Se o exe de destino já existe com o SHA256 igual ao publicado (download anterior cujo relaunch não aconteceu), os dois caminhos pulam o download e vão direto para atalho + relaunch — renomear sobre o exe em execução falharia com EPERM no Windows.
 
-**Não há assinatura de código nem chave de updater** — nem Authenticode, nem minisign/ed25519. A integridade é só o SHA256 gravado nos metadados do blob. É o ponto fraco conhecido da distribuição.
+**Não há assinatura de código nem chave de updater** — nem Authenticode, nem minisign/ed25519. A integridade é só o SHA256 gravado nos metadados do objeto. É o ponto fraco conhecido da distribuição.
 
 ## Env
 
-`desktop/.env` tem `AZURE_STORAGE_ACCOUNT_NAME` e `AZURE_STORAGE_ACCOUNT_KEY`, mas **nenhum script o lê** (o publish roda a partir de `back/`).
+`desktop/.env` é opcional: o `publish.ps1` aplica o que houver nele (`DESKTOP_GCS_BUCKET`, `DESKTOP_BUILD_PREFIX`) por cima do ambiente antes de rodar o script de `back/`.
 
 Compilados no binário via `option_env!`: `SKYFIT_BACK_URL`, `SKYFIT_FRONT_URL`, `SKYFIT_PAYLOAD_FINGERPRINT`. Runtime: `SKYFIT_DEVTOOLS=1` abre o devtools da janela principal.
 

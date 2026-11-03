@@ -1,12 +1,10 @@
 import { Hono } from 'hono';
 import { env } from '../config/env';
-import { azureStorageConfigured, blobDownloadUrl, listBlobs, type BlobEntry } from '../services/azureBlob';
+import { blobDownloadUrl, gcsStorageConfigured, listBlobs, type BlobEntry } from '../services/gcsStorage';
 import type { AppBindings } from '../http/types';
 
 export const desktopRoutes = new Hono<AppBindings>();
 
-/** The download link only has to survive the download itself. */
-const DOWNLOAD_TTL_SECONDS = 30 * 60;
 const LISTING_TTL_MS = 60_000;
 
 export type DesktopBuild = {
@@ -23,9 +21,9 @@ let cachedListing: Listing | null = null;
 let pendingListing: Promise<Listing> | null = null;
 
 // The desktop app checks for updates before anyone logs in, so this stays public.
-// It only ever exposes a short lived read link to the installer that every user already runs.
+// It only ever exposes the public link to the installer that every user already runs.
 desktopRoutes.get('/latest', async (c) => {
-	if (!azureStorageConfigured()) {
+	if (!gcsStorageConfigured()) {
 		return c.json({ configured: false, latest: null });
 	}
 
@@ -37,13 +35,13 @@ desktopRoutes.get('/latest', async (c) => {
 		configured: true,
 		latest: {
 			...latest,
-			downloadUrl: await blobDownloadUrl(env.desktop.container, latest.fileName, DOWNLOAD_TTL_SECONDS)
+			downloadUrl: blobDownloadUrl(env.desktop.bucket, latest.fileName)
 		}
 	});
 });
 
 desktopRoutes.get('/releases', async (c) => {
-	if (!azureStorageConfigured()) return c.json({ configured: false, releases: [] });
+	if (!gcsStorageConfigured()) return c.json({ configured: false, releases: [] });
 	const { builds } = await loadBuilds();
 	return c.json({ configured: true, releases: builds });
 });
@@ -58,7 +56,7 @@ async function loadBuilds(): Promise<Listing> {
 }
 
 async function fetchBuilds(): Promise<Listing> {
-	const blobs = await listBlobs(env.desktop.container, env.desktop.buildPrefix);
+	const blobs = await listBlobs(env.desktop.bucket, env.desktop.buildPrefix);
 	const builds = blobs
 		.map(toBuild)
 		.filter((build): build is DesktopBuild => build !== null)

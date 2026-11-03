@@ -293,14 +293,14 @@ if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
     throw "Executable not found: $ExePath. Rode com -Build, passe -ExePath, ou reutilize o latest em dist."
 }
 
-Write-Step "Publishing $ExePath to Azure Blob Storage"
+Write-Step "Publishing $ExePath to Google Cloud Storage"
 
 # Variáveis já presentes no ambiente têm prioridade sobre o .env no Bun, então
-# aplicamos desktop/.env explicitamente para não publicar na conta errada.
+# aplicamos desktop/.env explicitamente para não publicar no bucket errado.
 $DesktopEnvPath = Join-Path $DesktopDir ".env"
 $DesktopEnv = Import-DotEnv -Path $DesktopEnvPath
 if ($DesktopEnv.Count -eq 0) {
-    Write-Host "Aviso: $DesktopEnvPath não encontrado (ou vazio). Usando as variáveis do ambiente e de back/.env." -ForegroundColor Yellow
+    Write-Host "$DesktopEnvPath não encontrado (ou vazio). Usando as variáveis do ambiente e de back/.env." -ForegroundColor DarkGray
 }
 
 $PreviousEnv = @{}
@@ -314,13 +314,7 @@ foreach ($key in $DesktopEnv.Keys) {
 
 Push-Location $BackDir
 try {
-    foreach ($required in @("AZURE_STORAGE_ACCOUNT_NAME", "AZURE_STORAGE_ACCOUNT_KEY")) {
-        $value = [Environment]::GetEnvironmentVariable($required)
-        if ([string]::IsNullOrWhiteSpace($value)) {
-            throw "$required não está definido. Adicione em $DesktopEnvPath."
-        }
-    }
-
+    # O upload usa o token da conta logada no gcloud (`gcloud auth login`).
     & bun "src/scripts/publish-desktop.ts" $ExePath
     if ($LASTEXITCODE -ne 0) {
         throw "publish-desktop.ts failed with exit code $LASTEXITCODE"

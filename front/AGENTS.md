@@ -34,6 +34,7 @@ Vitest tem dois projetos: `client` (browser, Chromium via Playwright, casa `src/
 | `/atendimento` | Tela principal da recepção: abertura rápida de atendimento, fila visual, edição inline, modal de eventos, criação de professor. Repolla a fila a cada 30s |
 | `/leads` | Agendados próximos + busca de leads, via `LeadRow` |
 | `/dashboard` | KPIs, timeline, tabelas de métricas, auditoria. Gated: ADMIN, SOCIO, GERENTE_REGIONAL |
+| `/dashboard/audio` | Auditoria de áudio: escolhe academia/dia/gravação, barras do dia e de detalhe (20 min) para posicionar, lista de atendimentos com "Ouvir". Aceita `?academyId=&at=` (link "Ouvir" da auditoria do dashboard). Mesmo gate |
 | `/administracao` | CRUD de academias, usuários, professores, planos e motivos de perda. Gated: os três acima + LIDER |
 | `/conta` | Senha, confirmação de e-mail, credenciais EVO, sessão do navegador EVO |
 | `/redefinir-senha` | Pública (`?token=`), única entrada em `PUBLIC_ROUTES` |
@@ -56,15 +57,21 @@ Em `EventFormModal.svelte`: grava o evento pela API → pede `POST /api/evo/atte
 
 `src/lib/api/evo-log.svelte.ts` é um store de runes em módulo (`$state`) persistido em `skyfit:evo-log`, exibido por `EvoBridgeDiagnostics.svelte`.
 
+## Áudio da recepção
+
+`src/lib/audio/`. Só grava dentro do app desktop ≥ 1.0.22 (`/evo/app-info` com `desktop: true`; antes disso o WebView2 mostraria prompt de microfone) — no navegador comum, `localStorage["skyfit:audio-record"] = "1"` liga para teste. `recorder.svelte.ts` abre o microfone ao logar e grava trechos de `segmentSeconds` (de `GET /api/audio/config`) alinhados a hh:mm:00 do relógio do servidor: cada trecho é um `MediaRecorder` próprio, o próximo começa antes de o anterior parar (sem buraco, alguns ms de sobreposição). `queue.ts` guarda os trechos no IndexedDB `skyfit-audio-segments` até o back confirmar o upload, então queda de internet não perde áudio. `AudioStatusBadge` mostra o estado e a fila no cabeçalho.
+
+`player.ts` (`SegmentPlayer`) toca os trechos como um áudio só: baixa e decodifica cada um (Web Audio) e agenda o próximo exatamente no fim do anterior no relógio do `AudioContext`, descartando a sobreposição; buraco > 1,5 s (app fechado) é pulado. A posição é sempre horário real em ms.
+
 ## Estado
 
 Runes em tudo: `$state`, `$state.raw` para coleções trocadas por inteiro, `$derived`/`$derived.by`, `$effect`, `$props`. Sessão global no `+layout.svelte` raiz, distribuída por `createContext` em `src/lib/session.ts` (`getSessionContext`/`setSessionContext`, com `loadSession`/`logout`). Não há biblioteca de store nem writables clássicos.
 
-Chaves de `localStorage`: `skyfit:api-host`, `skyfit:evo-log`, `attendance-quick-draft`.
+Chaves de `localStorage`: `skyfit:api-host`, `skyfit:evo-log`, `attendance-quick-draft` (o gravador lê o `academyId` daqui), `skyfit:audio-device-id`, `skyfit:audio-record`.
 
 ## Tipos
 
-`src/lib/types.ts` espelha `back/src/db/schema.ts` **à mão** — não há pacote compartilhado. Mudou o schema no back? Atualize aqui. Contém `Role`, `User`, `Academy`, `Professor`, `AttendanceEventType`, `LeadEvent`, `Attendance`, `LeadSummary`, `OutcomeType`, `LossReason`, `EvoCredentialsStatus`, `EvoJobStatus`, `DashboardSummary`, `MetricRow`.
+`src/lib/types.ts` espelha `back/src/db/schema.ts` **à mão** — não há pacote compartilhado. Mudou o schema no back? Atualize aqui. Contém `Role`, `User`, `Academy`, `Professor`, `AttendanceEventType`, `LeadEvent`, `Attendance`, `LeadSummary`, `OutcomeType`, `LossReason`, `EvoCredentialsStatus`, `EvoJobStatus`, `AudioConfig`, `AudioSegment`, `AudioTimeline`, `DashboardSummary`, `MetricRow`.
 
 ## UI
 
