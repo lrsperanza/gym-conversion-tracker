@@ -13,13 +13,16 @@
 	import type { Academy, AudioSegment, AudioTimeline, AudioTimelineAttendance } from '$lib/types';
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 
+	/** Uma gravação contínua: um profissional logado em um terminal (device) da academia. */
 	type Track = {
 		key: string;
-		label: string;
 		userId: string;
+		userName: string;
+		terminalLabel: string;
 		segments: AudioSegment[];
 		totalMs: number;
 	};
+	type Professional = { userId: string; name: string; totalMs: number; tracks: Track[] };
 	type Range = { start: number; end: number };
 
 	const TIME_ZONE = 'America/Sao_Paulo';
@@ -70,7 +73,9 @@
 			byKey[key] ??= {
 				key,
 				userId: segment.userId,
-				label: `${segment.userName ?? 'Usuário removido'} · ${segment.deviceLabel || 'microfone'}`,
+				userName: segment.userName ?? 'Usuário removido',
+				// O microfone identifica o terminal; o final do deviceId desempata microfones iguais.
+				terminalLabel: `${segment.deviceLabel || 'Microfone'} · ${segment.deviceId.slice(-4)}`,
 				segments: [],
 				totalMs: 0
 			};
@@ -79,7 +84,33 @@
 		}
 		return Object.values(byKey).sort((a, b) => b.totalMs - a.totalMs);
 	});
+	let professionals = $derived.by(() => {
+		const byUser: Record<string, Professional> = {};
+		for (const candidate of tracks) {
+			byUser[candidate.userId] ??= {
+				userId: candidate.userId,
+				name: candidate.userName,
+				totalMs: 0,
+				tracks: []
+			};
+			byUser[candidate.userId].tracks.push(candidate);
+			byUser[candidate.userId].totalMs += candidate.totalMs;
+		}
+		return Object.values(byUser).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+	});
 	let track = $derived(tracks.find((candidate) => candidate.key === trackKey) ?? null);
+	let professional = $derived(
+		professionals.find((candidate) => candidate.userId === track?.userId) ?? null
+	);
+	let onlyProfessionalAttendances = $state(true);
+	let attendances = $derived(
+		(timeline?.attendances ?? []).filter(
+			(attendance) =>
+				!onlyProfessionalAttendances ||
+				!professional ||
+				attendance.receptionistId === professional.userId
+		)
+	);
 	let coverage = $derived.by(() => mergeRanges(track?.segments ?? []));
 	let dayStart = $derived(Date.parse(`${filter.date}T00:00:00${UTC_OFFSET}`));
 	let dayRange = $derived.by<Range>(() => {
@@ -132,12 +163,6 @@
 			ticks.push(tick);
 		}
 		return ticks;
-	});
-	let recordedLabel = $derived.by(() => {
-		const minutes = Math.round((track?.totalMs ?? 0) / 60_000);
-		return minutes >= 60
-			? `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}`
-			: `${minutes} min`;
 	});
 
 	$effect(() => {
@@ -222,6 +247,19 @@
 			)
 		);
 		return covering.find((candidate) => candidate.userId === preferUserId) ?? covering[0] ?? null;
+	}
+
+	/** Troca de profissional: começa pelo terminal em que ele mais gravou no dia. */
+	function selectProfessional(userId: string) {
+		const next = professionals.find((candidate) => candidate.userId === userId);
+		if (next) trackKey = next.tracks.toSorted((a, b) => b.totalMs - a.totalMs)[0]!.key;
+	}
+
+	function durationLabel(ms: number) {
+		const minutes = Math.round(ms / 60_000);
+		return minutes >= 60
+			? `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}`
+			: `${minutes} min`;
 	}
 
 	function mergeRanges(segments: AudioSegment[]): Range[] {
@@ -329,7 +367,7 @@
 					</p>
 				</div>
 				<form
-					class="grid gap-3 sm:grid-cols-3"
+					class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
 					onsubmit={(event) => {
 						event.preventDefault();
 						void loadTimeline();
@@ -357,19 +395,34 @@
 						/>
 					</label>
 					<label class="text-sm font-medium text-slate-700">
-						Gravação
+						Profissional
 						<select
 							class="mt-1 w-full rounded-2xl border-slate-300"
-							bind:value={trackKey}
-							disabled={!tracks.length}
+							value={professional?.userId ?? ''}
+							disabled={!professionals.length}
+							onchange={(event) => selectProfessional(event.currentTarget.value)}
 						>
-							{#each tracks as candidate (candidate.key)}
-								<option value={candidate.key}>{candidate.label}</option>
+							{#each professionals as candidate (candidate.userId)}
+								<option value={candidate.userId}
+									>{candidate.name} ({durationLabel(candidate.totalMs)})</option
+								>
 							{:else}
 								<option value="">Nenhuma gravação</option>
 							{/each}
 						</select>
 					</label>
+					{#if professional && professional.tracks.length > 1}
+						<label class="text-sm font-medium text-slate-700">
+							Terminal
+							<select class="mt-1 w-full rounded-2xl border-slate-300" bind:value={trackKey}>
+								{#each professional.tracks as candidate (candidate.key)}
+									<option value={candidate.key}
+										>{candidate.terminalLabel} ({durationLabel(candidate.totalMs)})</option
+									>
+								{/each}
+							</select>
+						</label>
+					{/if}
 				</form>
 			</div>
 		</div>
@@ -395,7 +448,7 @@
 							{:else if !hasAudioAtPosition}
 								Sem gravação neste horário — o play pula para o próximo trecho.
 							{:else}
-								{recordedLabel} gravados neste dia
+								{durationLabel(track.totalMs)} gravados neste dia neste terminal
 							{/if}
 						</p>
 					</div>
@@ -492,7 +545,7 @@
 								style:width={`${Math.max(0.15, widthIn(dayRange, range.start, range.end))}%`}
 							></div>
 						{/each}
-						{#each timeline?.attendances ?? [] as attendance (attendance.id)}
+						{#each attendances as attendance (attendance.id)}
 							<div
 								class="absolute inset-y-0 w-0.5 bg-sky-600"
 								style:left={`${percentIn(dayRange, Date.parse(attendance.startedAt))}%`}
@@ -551,7 +604,7 @@
 								style:left={`${percentIn(zoomRange, tick)}%`}
 							></div>
 						{/each}
-						{#each timeline?.attendances ?? [] as attendance (attendance.id)}
+						{#each attendances as attendance (attendance.id)}
 							{@const startedAt = Date.parse(attendance.startedAt)}
 							{#if startedAt >= zoomRange.start && startedAt <= zoomRange.end}
 								<div
@@ -587,8 +640,16 @@
 		{/if}
 
 		<section class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-			<h3 class="text-base font-semibold text-slate-900">Atendimentos do dia</h3>
-			{#if timeline?.attendances.length}
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<h3 class="text-base font-semibold text-slate-900">Atendimentos do dia</h3>
+				{#if professional}
+					<label class="flex items-center gap-2 text-sm text-slate-600">
+						<input type="checkbox" class="rounded" bind:checked={onlyProfessionalAttendances} />
+						Só os de {professional.name}
+					</label>
+				{/if}
+			</div>
+			{#if attendances.length}
 				<div class="mt-4 overflow-x-auto">
 					<table class="min-w-full text-left text-sm">
 						<thead class="text-xs tracking-wide text-slate-500 uppercase">
@@ -601,7 +662,7 @@
 							</tr>
 						</thead>
 						<tbody class="divide-y divide-slate-100">
-							{#each timeline.attendances as attendance (attendance.id)}
+							{#each attendances as attendance (attendance.id)}
 								{@const startedAt = Date.parse(attendance.startedAt)}
 								{@const audible = trackCovering(startedAt) !== null}
 								<tr>

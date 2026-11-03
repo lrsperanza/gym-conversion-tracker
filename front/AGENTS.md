@@ -34,7 +34,7 @@ Vitest tem dois projetos: `client` (browser, Chromium via Playwright, casa `src/
 | `/atendimento` | Tela principal da recepção: abertura rápida de atendimento, fila visual, edição inline, modal de eventos, criação de professor. Repolla a fila a cada 30s |
 | `/leads` | Agendados próximos + busca de leads, via `LeadRow` |
 | `/dashboard` | KPIs, timeline, tabelas de métricas, auditoria. Gated: ADMIN, SOCIO, GERENTE_REGIONAL |
-| `/dashboard/audio` | Auditoria de áudio: escolhe academia/dia/gravação, barras do dia e de detalhe (20 min) para posicionar, lista de atendimentos com "Ouvir". Aceita `?academyId=&at=` (link "Ouvir" da auditoria do dashboard). Mesmo gate |
+| `/dashboard/audio` | Auditoria de áudio: escolhe academia, dia, profissional (quem estava logado) e, se ele usou mais de um no dia, terminal (cada `deviceId` é uma gravação contínua); barras do dia e de detalhe (20 min) para posicionar, lista de atendimentos com "Ouvir". Aceita `?academyId=&at=` (link "Ouvir" da auditoria do dashboard). Mesmo gate |
 | `/administracao` | CRUD de academias, usuários, professores, planos e motivos de perda. Gated: os três acima + LIDER |
 | `/conta` | Senha, confirmação de e-mail, credenciais EVO, sessão do navegador EVO |
 | `/redefinir-senha` | Pública (`?token=`), única entrada em `PUBLIC_ROUTES` |
