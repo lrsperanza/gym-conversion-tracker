@@ -27,6 +27,7 @@
 
 	type AuditRow = {
 		attendance_id: string;
+		academy_id: string;
 		started_at: string;
 		status: Attendance['status'];
 		lead_name: string;
@@ -191,6 +192,10 @@
 					<p class="text-slate-600">
 						KPIs, evolução temporal, atribuição de conversão e auditoria.
 					</p>
+					<a
+						class="mt-2 inline-flex rounded-2xl border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+						href={resolve('/dashboard/audio')}>Auditoria de áudio</a
+					>
 				</div>
 				<form
 					class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
@@ -520,7 +525,8 @@
 								<th class="py-2 pr-4">Professor</th>
 								<th class="py-2 pr-4">Status</th>
 								<th class="py-2 pr-4">Resultado</th>
-								<th class="py-2">Abertura</th>
+								<th class="py-2 pr-4">Abertura</th>
+								<th class="py-2"></th>
 							</tr>
 						</thead>
 						<tbody class="divide-y divide-slate-100">
@@ -552,7 +558,14 @@
 											{/if}
 										</div>
 									</td>
-									<td class="py-3">{dateTime(row.started_at)}</td>
+									<td class="py-3 pr-4">{dateTime(row.started_at)}</td>
+									<td class="py-3">
+										<a
+											class="rounded-2xl border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+											href={`${resolve('/dashboard/audio')}${queryString({ academyId: row.academy_id, at: row.started_at })}`}
+											title="Abrir o áudio da recepção no horário do atendimento">Ouvir</a
+										>
+									</td>
 								</tr>
 							{/each}
 						</tbody>

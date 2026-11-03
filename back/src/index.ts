@@ -8,6 +8,7 @@ import { handleError } from './http/errors';
 import type { AppBindings } from './http/types';
 import { adminRoutes } from './routes/admin';
 import { attendanceRoutes } from './routes/attendances';
+import { audioRoutes } from './routes/audio';
 import { authRoutes } from './routes/auth';
 import { cameraAdminRoutes } from './routes/cameras';
 import { clipRoutes } from './routes/clips';
@@ -89,6 +90,7 @@ app.route('/api/admin', cameraAdminRoutes);
 app.route('/api/evo', evoRoutes);
 app.route('/api/desktop', desktopRoutes);
 app.route('/api', clipRoutes);
+app.route('/api', audioRoutes);
 app.route('/api', attendanceRoutes);
 app.route('/api', dashboardRoutes);
 

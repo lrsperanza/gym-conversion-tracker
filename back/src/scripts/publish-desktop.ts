@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { env } from '../config/env';
-import { azureStorageConfigured, uploadBlob } from '../services/azureBlob';
+import { blobDownloadUrl, gcsStorageConfigured, uploadBlob } from '../services/gcsStorage';
 
 const fileArg = Bun.argv[2];
 if (!fileArg) {
@@ -9,8 +9,8 @@ if (!fileArg) {
 	process.exit(1);
 }
 
-if (!azureStorageConfigured()) {
-	console.error('Configure AZURE_STORAGE_ACCOUNT_NAME e AZURE_STORAGE_ACCOUNT_KEY no .env');
+if (!gcsStorageConfigured()) {
+	console.error('Configure DESKTOP_GCS_BUCKET no .env');
 	process.exit(1);
 }
 
@@ -30,34 +30,35 @@ if (!pattern.test(fileName)) {
 	process.exit(1);
 }
 
+const accessToken = readAccessToken();
 const bytes = new Uint8Array(await file.arrayBuffer());
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 
-console.info(
-	`Enviando ${fileName} (${bytes.byteLength} bytes) para ${env.azure.accountName}/${env.desktop.container}/${fileName}...`
-);
-try {
-	await uploadBlob(env.desktop.container, fileName, bytes, {
-		contentType: 'application/octet-stream',
-		metadata: { sha256 }
-	});
-} catch (error) {
-	const message = error instanceof Error ? error.message : String(error);
-	if (!message.includes('ContainerNotFound')) throw error;
-
-	console.error(message);
-	console.error(
-		`\nO container "${env.desktop.container}" não existe na conta "${env.azure.accountName}".\n` +
-			'Variáveis já definidas no sistema têm prioridade sobre o .env, então confira se AZURE_STORAGE_ACCOUNT_NAME\n' +
-			'aponta mesmo para a conta esperada (`[Environment]::GetEnvironmentVariable("AZURE_STORAGE_ACCOUNT_NAME", "User")`)\n' +
-			'ou crie o container antes de publicar.'
-	);
-	process.exit(1);
-}
+console.info(`Enviando ${fileName} (${bytes.byteLength} bytes) para gs://${env.desktop.bucket}/${fileName}...`);
+await uploadBlob(env.desktop.bucket, fileName, bytes, {
+	accessToken,
+	contentType: 'application/octet-stream',
+	metadata: { sha256 }
+});
 
 console.info('Upload concluído.');
-console.info(`URL pública (após listagem): https://${env.azure.accountName}.blob.core.windows.net/${env.desktop.container}/${fileName}`);
+console.info(`URL pública: ${blobDownloadUrl(env.desktop.bucket, fileName)}`);
 console.info(`sha256=${sha256}`);
+
+/** Uses whoever is logged in to the gcloud CLI, so publishing needs no key in the .env. */
+function readAccessToken() {
+	if (Bun.env.GCS_ACCESS_TOKEN) return Bun.env.GCS_ACCESS_TOKEN;
+
+	const gcloud = process.platform === 'win32' ? 'gcloud.cmd' : 'gcloud';
+	const result = Bun.spawnSync([gcloud, 'auth', 'print-access-token'], { stderr: 'pipe' });
+	const token = result.stdout.toString().trim();
+	if (result.exitCode !== 0 || !token) {
+		console.error(result.stderr.toString().trim());
+		console.error('\nNão consegui um token do gcloud. Rode `gcloud auth login` com uma conta que escreva no bucket.');
+		process.exit(1);
+	}
+	return token;
+}
 
 function escapeRegExp(value: string) {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

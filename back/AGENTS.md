@@ -15,7 +15,7 @@ Contexto do monorepo: [`../gym-conversion-tracker-workspace/AGENTS.md`](../gym-c
 | `bun run db:migrate` | Aplica `drizzle/*.sql` em ordem de nome |
 | `bun run db:seed` | Upsert de outcome types + loss reasons padrão |
 | `bun run bootstrap:admin "Nome" email senha [whatsapp]` | Cria o primeiro ADMIN global |
-| `bun run desktop:publish <caminho.exe>` | Sobe build do desktop para o Azure Blob |
+| `bun run desktop:publish <caminho.exe>` | Sobe build do desktop para o GCS (token do `gcloud` logado) |
 
 Bootstrap do zero: `.env` → `db:migrate` → `db:seed` → `bootstrap:admin` → `dev`.
 
@@ -28,9 +28,9 @@ Bootstrap do zero: `.env` → `db:migrate` → `db:seed` → `bootstrap:admin` �
 | `src/db/` | `client.ts` (postgres.js), `schema.ts` (canônico), `migrate.ts`, `seed.ts` |
 | `src/domain/` | `normalize.ts` (nome/email/telefone), `outcomeTypeKey.ts` + testes |
 | `src/http/` | `auth.ts` (middleware + RBAC), `errors.ts`, `schemas.ts` (Zod), `types.ts` |
-| `src/routes/` | `auth.ts`, `admin.ts`, `attendances.ts`, `dashboard.ts`, `evo.ts`, `desktop.ts` |
+| `src/routes/` | `auth.ts`, `admin.ts`, `attendances.ts`, `audio.ts`, `dashboard.ts`, `evo.ts`, `desktop.ts` |
 | `src/security/` | `crypto.ts`, `evoCrypto.ts` (AES-GCM), `evoTicket.ts` (HMAC) |
-| `src/services/` | `audit.ts`, `azureBlob.ts`, `emailTokens.ts`, `mail.ts`, `video/` |
+| `src/services/` | `audit.ts`, `gcsStorage.ts`, `gcpToken.ts`, `emailTokens.ts`, `mail.ts`, `video/` |
 | `src/scripts/` | `bootstrap-admin.ts`, `publish-desktop.ts` |
 | `drizzle/` | Migrations `.sql` numeradas |
 
@@ -42,11 +42,11 @@ Diferenças do DSQL que afetam código:
 - **Sem enums nem extensões.** As colunas que eram enum são `text` + `CHECK (col IN (...))`; cast para tipo do schema (`::"gym-conversion-tracker".x`) não existe — use `::text`. `pg_trgm` não existe: use `"gym-conversion-tracker".similarity(a, b)` (mesmo algoritmo, SQL puro) e `>= 0.3` no lugar de `%`. Sem índice GIN: só B-tree.
 - **Concorrência otimista.** Conflito vira erro `40001` (OC000/OC001) em vez de lock. Transação: use `transaction()` de `src/db/transaction.ts` (refaz sozinha; callback só com banco). Fora de transação, o `handleError` devolve 409 `CONCURRENT_UPDATE`.
 - **Limites:** 3.000 linhas e 10 MiB por transação, 2 MiB por linha, conexão cai com 1 h, sem tabela temporária, sem PL/pgSQL, collation só `C`.
-- **Migrations novas** (`drizzle/*.sql`, rodadas por `db:migrate`): cada comando roda sozinho, sem transação; escreva comandos idempotentes (`IF NOT EXISTS`), sem `DO $$`, `CREATE TYPE` ou `TRUNCATE`; índice em tabela com dados é `CREATE INDEX ASYNC`. As 0000–0011 são do Aurora e já constam em `_migrations`.
+- **Migrations novas** (`drizzle/*.sql`, rodadas por `db:migrate`): cada comando roda sozinho, sem transação; escreva comandos idempotentes (`IF NOT EXISTS`), sem `DO $$`, `CREATE TYPE` ou `TRUNCATE`; índice é sempre `CREATE INDEX ASYNC` (o DSQL recusa o síncrono até em tabela vazia). As 0000–0011 são do Aurora e já constam em `_migrations`.
 
 **Regra mais importante do repo:** Drizzle é usado **só para definir schema e tipos**. Todo acesso em runtime usa a tag `sql` de `src/db/client.ts` com SQL cru, sempre qualificando `"gym-conversion-tracker"."tabela"`. O export `db` (drizzle) existe mas não é usado em lugar nenhum — não introduza query builder em handler novo, siga o estilo vizinho.
 
-Tabelas: `academies`, `users`, `user_academy_roles`, `professors`, `leads`, `attendances`, `attendance_events`, `outcome_types`, `sales`, `loss_reasons`, `attendance_losses`, `sessions`, `email_tokens`, `audit_logs`, além de `_migrations` (criada pelo runner, fora do schema Drizzle).
+Tabelas: `academies`, `users`, `user_academy_roles`, `professors`, `leads`, `attendances`, `attendance_events`, `outcome_types`, `sales`, `loss_reasons`, `attendance_losses`, `sessions`, `email_tokens`, `audit_logs`, `audio_segments`, além de `_migrations` (criada pelo runner, fora do schema Drizzle).
 
 Enums: `role`, `attendance_status`, `presenter`, `attendance_event_type`, `outcome_kind`, `loss_category`, `email_token_purpose`.
 
@@ -61,6 +61,7 @@ app.route('/api/auth', authRoutes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/evo', evoRoutes);
 app.route('/api/desktop', desktopRoutes);
+app.route('/api', audioRoutes);        // gravação contínua + auditoria de áudio
 app.route('/api', attendanceRoutes);   // leads + attendances
 app.route('/api', dashboardRoutes);
 ```
@@ -95,15 +96,16 @@ O back não fala com o EVO por HTTP; a automação é do `evo-bridge` + `evo-pup
 
 ## Integrações
 
-- **Azure Blob** (`src/services/azureBlob.ts`): distribuição do desktop. REST puro com assinatura Shared Key/SAS, sem SDK. `listBlobs`, `blobDownloadUrl`, `uploadBlob`. Blobs nomeados `{DESKTOP_BUILD_PREFIX}{semver}.exe`.
+- **Google Cloud Storage** (`src/services/gcsStorage.ts`): distribuição do desktop no bucket `gym-conversion-tracker-desktop` (projeto `gym-conversion-tracker`, `southamerica-east1`), com leitura pública (`allUsers` objectViewer). REST puro da JSON API, sem SDK. `listBlobs` e `blobDownloadUrl` não usam credencial; `uploadBlob` recebe um access token (o publish pega via `gcloud auth print-access-token`, ou `GCS_ACCESS_TOKEN`). Objetos nomeados `{DESKTOP_BUILD_PREFIX}{semver}.exe`, com `metadata.sha256` e `Cache-Control: no-cache`. Migrado do Azure Blob (`smartdocstorage/personal`) em nov/2026; os builds 1.0.10–1.0.21 continuam lá, sem uso.
+- **Áudio da recepção** (`src/routes/audio.ts`): o desktop grava o microfone sem parar e sobe trechos autocontidos de ~1 min (WebM/Opus) para `POST /api/audio/segments`; o back grava no bucket **privado** `gym-conversion-tracker-attendance-audio` (`AUDIO_GCS_BUCKET`, `southamerica-east1`, public access prevention, sem soft delete, lifecycle **Delete após 30 dias**) e indexa em `audio_segments` por `started_at` (único por `device_id` + `started_at`, então reenvio é idempotente). Objeto: `{academyId|sem-academia}/{dia local}/{deviceId}/{startedAt}.webm`. A academia é a selecionada na recepção (cai na primeira academia do usuário). `GET /api/audio/timeline` (ADMIN/SOCIO/GERENTE_REGIONAL, escopo por academia, até 48 h) lista trechos + atendimentos; `GET /api/audio/segments/:id/file` faz proxy do objeto (o bucket não é público). As linhas além de `AUDIO_RETENTION_DAYS` são podadas pelo próprio upload, no máximo 1×/hora por instância, em lotes de 1.000. O token do GCS vem de `src/services/gcpToken.ts`: metadata server no Cloud Run (service account `437354431924-compute@`, com `storage.objectAdmin` no bucket), `GCS_ACCESS_TOKEN` ou `gcloud auth print-access-token` localmente.
 - **SMTP AWS SES** via Nodemailer (`src/services/mail.ts`). Sem `AWS_SMTP_FROM_EMAIL` o envio lança 503.
-- **Cloud Run** para deploy. Nenhum outro SDK GCP no código.
+- **Cloud Run** para deploy. Nenhum SDK GCP no código (GCS é REST puro).
 
 ## Env
 
 Tudo é lido em `src/config/env.ts` (Zod, a partir de `Bun.env`):
 
-`PostgreHost`, `PostgrePort`, `PostgreDatabase`, `PostgreUser`, `PostgrePassword`, `PostgreSSL`, `PORT`, `API_PORT`, `CORS_ORIGIN`, `APP_URL`, `AWS_SMTP_HOST`, `AWS_SMTP_PORT`, `AWS_SMTP_USERNAME`, `AWS_SMTP_PASSWORD`, `AWS_SMTP_FROM_EMAIL`, `AWS_SMTP_FROM_NAME`, `EVO_CRED_KEY` (base64 de 32 bytes), `EVO_TICKET_KEY`, `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY`, `DESKTOP_BLOB_CONTAINER`, `DESKTOP_BUILD_PREFIX`.
+`PostgreHost`, `PostgrePort`, `PostgreDatabase`, `PostgreUser`, `PostgrePassword`, `PostgreSSL`, `PORT`, `API_PORT`, `CORS_ORIGIN`, `APP_URL`, `AWS_SMTP_HOST`, `AWS_SMTP_PORT`, `AWS_SMTP_USERNAME`, `AWS_SMTP_PASSWORD`, `AWS_SMTP_FROM_EMAIL`, `AWS_SMTP_FROM_NAME`, `EVO_CRED_KEY` (base64 de 32 bytes), `EVO_TICKET_KEY`, `DESKTOP_GCS_BUCKET`, `DESKTOP_BUILD_PREFIX`, `AUDIO_ENABLED`, `AUDIO_GCS_BUCKET`, `AUDIO_SEGMENT_SECONDS`, `AUDIO_RETENTION_DAYS`.
 
 `PORT` (injetado pelo Cloud Run) tem prioridade sobre `API_PORT`. `DB_SCHEMA` é constante, não env. O `.env.example` está incompleto: faltam `PostgreSSL`, `PORT` e `EVO_TICKET_KEY`.
 
@@ -111,7 +113,7 @@ Tudo é lido em `src/config/env.ts` (Zod, a partir de `Bun.env`):
 
 `Dockerfile` (`oven/bun:1-alpine`, expõe 8080) + `deploy.ps1`: build para o Artifact Registry `southamerica-east1` e `gcloud run deploy` do serviço `gym-conversion-tracker` (512Mi, 1 CPU, concorrência 80, `--allow-unauthenticated`). URL: `https://gym-conversion-tracker-437354431924.southamerica-east1.run.app`.
 
-`deploy.ps1` só passa `CORS_ORIGIN` e `APP_URL`; **segredos de DB/SMTP/EVO/Azure precisam já estar configurados no serviço do Cloud Run**. Não há CI — o deploy é manual.
+`deploy.ps1` só passa `CORS_ORIGIN` e `APP_URL`; **segredos de SMTP/EVO precisam já estar configurados no serviço do Cloud Run**. Não há CI — o deploy é manual.
 
 ## Invariantes do domínio
 

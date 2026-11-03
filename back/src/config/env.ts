@@ -33,10 +33,16 @@ const rawEnvSchema = z.object({
 	CAMERA_CLIP_MAX_MINUTES: z.coerce.number().int().positive().default(15),
 	CAMERA_MAX_CONCURRENT: z.coerce.number().int().positive().default(2),
 	GYM_TIMEZONE: z.string().default('America/Sao_Paulo'),
-	AZURE_STORAGE_ACCOUNT_NAME: z.string().default(''),
-	AZURE_STORAGE_ACCOUNT_KEY: z.string().default(''),
-	DESKTOP_BLOB_CONTAINER: z.string().default('personal'),
-	DESKTOP_BUILD_PREFIX: z.string().default('Skyfit-EVO-')
+	DESKTOP_GCS_BUCKET: z.string().default('gym-conversion-tracker-desktop'),
+	DESKTOP_BUILD_PREFIX: z.string().default('Skyfit-EVO-'),
+	AUDIO_ENABLED: z
+		.enum(['true', 'false'])
+		.default('true')
+		.transform((value) => value === 'true'),
+	// Bucket privado com regra de lifecycle que apaga os objetos depois de AUDIO_RETENTION_DAYS.
+	AUDIO_GCS_BUCKET: z.string().default('gym-conversion-tracker-attendance-audio'),
+	AUDIO_SEGMENT_SECONDS: z.coerce.number().int().min(10).max(300).default(60),
+	AUDIO_RETENTION_DAYS: z.coerce.number().int().positive().default(30)
 });
 
 const parsed = rawEnvSchema.parse(Bun.env);
@@ -85,13 +91,15 @@ export const env = {
 		maxConcurrent: parsed.CAMERA_MAX_CONCURRENT,
 		timeZone: parsed.GYM_TIMEZONE
 	},
-	azure: {
-		accountName: parsed.AZURE_STORAGE_ACCOUNT_NAME,
-		accountKey: parsed.AZURE_STORAGE_ACCOUNT_KEY
-	},
 	desktop: {
-		container: parsed.DESKTOP_BLOB_CONTAINER,
+		bucket: parsed.DESKTOP_GCS_BUCKET,
 		buildPrefix: parsed.DESKTOP_BUILD_PREFIX
+	},
+	audio: {
+		enabled: parsed.AUDIO_ENABLED,
+		bucket: parsed.AUDIO_GCS_BUCKET,
+		segmentSeconds: parsed.AUDIO_SEGMENT_SECONDS,
+		retentionDays: parsed.AUDIO_RETENTION_DAYS
 	}
 } as const;
 

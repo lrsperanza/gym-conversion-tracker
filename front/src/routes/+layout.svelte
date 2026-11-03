@@ -6,16 +6,21 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { getBridgeBaseUrl } from '$lib/api/bridge';
 	import { ApiError, api } from '$lib/api/client';
-	import { fetchDesktopAppInfo } from '$lib/api/desktop';
+	import { compareVersions, fetchDesktopAppInfo } from '$lib/api/desktop';
+	import {
+		start as startAudioRecorder,
+		stop as stopAudioRecorder
+	} from '$lib/audio/recorder.svelte';
 	import { canAccessAdmin, canAccessDashboard } from '$lib/auth/roles';
 	import ApiHostBadge from '$lib/components/ApiHostBadge.svelte';
+	import AudioStatusBadge from '$lib/components/AudioStatusBadge.svelte';
 	import DesktopUpdate from '$lib/components/DesktopUpdate.svelte';
 	import EvoBridgeDiagnostics from '$lib/components/EvoBridgeDiagnostics.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import { errorMessage } from '$lib/helpers';
 	import { setSessionContext, type SessionState } from '$lib/session';
 	import type { User } from '$lib/types';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 
 	type NavHref = '/atendimento' | '/leads' | '/dashboard' | '/administracao' | '/conta';
 	type NavLink = { href: NavHref; label: string };
@@ -29,6 +34,17 @@
 	let resetRequestForm = $state({ email: '' });
 	let accountMessage = $state('');
 	let desktopVersion = $state<string | null>(null);
+	// Só o app desktop grava o microfone (auditoria da recepção). Antes da 1.0.22 o WebView2 não libera
+	// o microfone sozinho e mostraria um prompt na recepção. No navegador comum, `skyfit:audio-record=1`
+	// no localStorage liga a gravação para testes.
+	const AUDIO_MIN_DESKTOP_VERSION = '1.0.22';
+	let audioForced = $state(false);
+	let desktopRecords = $derived(
+		desktopVersion !== null && compareVersions(desktopVersion, AUDIO_MIN_DESKTOP_VERSION) >= 0
+	);
+	let audioUserId = $derived(
+		session.user && (desktopRecords || audioForced) ? session.user.id : null
+	);
 	let pathname = $derived(page.url.pathname);
 	let isPublicRoute = $derived(PUBLIC_ROUTES.has(pathname));
 	let navLinks = $derived.by(() => {
@@ -57,6 +73,21 @@
 		// before the user reaches a screen that needs the EVO.
 		void getBridgeBaseUrl();
 		void loadDesktopVersion();
+		try {
+			audioForced = localStorage.getItem('skyfit:audio-record') === '1';
+		} catch {
+			/* Storage blocked: no forced recording. */
+		}
+	});
+
+	// Only the user id may drive this effect: the recorder reads and writes its own
+	// reactive state, and tracking it here would restart the microphone in a loop.
+	$effect(() => {
+		if (!audioUserId) return;
+		untrack(() => {
+			if (session.user) void startAudioRecorder(session.user);
+		});
+		return () => stopAudioRecorder();
 	});
 
 	// Every page sets its own <title> on navigation, so the desktop version has to be
@@ -253,7 +284,8 @@
 						</a>
 					{/each}
 				</nav>
-				<div class="flex items-center gap-3 text-sm text-slate-600">
+				<div class="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+					<AudioStatusBadge />
 					<span>{session.user.name}</span>
 					<button
 						class="rounded-2xl border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50"
