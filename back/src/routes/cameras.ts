@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { sql } from '../db/client';
+import { transaction } from '../db/transaction';
 import { assertCanAccessAcademy, canManageProfessor, requireAuth } from '../http/auth';
 import { badRequest, forbidden, notFound } from '../http/errors';
 import type { AppBindings, SessionUser } from '../http/types';
@@ -245,7 +246,7 @@ cameraAdminRoutes.post('/dvrs/:id/cameras', async (c) => {
 	if (!canManageVideo(user, academyId, 'create')) throw forbidden();
 	const input = cameraInputSchema.parse(await c.req.json());
 
-	const [camera] = await sql.begin(async (tx) => {
+	const [camera] = await transaction(async (tx) => {
 		if (input.isDefault) {
 			await tx`
 				UPDATE "gym-conversion-tracker"."academy_cameras" c
@@ -286,7 +287,7 @@ cameraAdminRoutes.patch('/cameras/:id', async (c) => {
 	const input = cameraPatchSchema.parse(await c.req.json());
 	if (!Object.keys(input).length) throw badRequest('Nada para atualizar.');
 
-	const [camera] = await sql.begin(async (tx) => {
+	const [camera] = await transaction(async (tx) => {
 		if (input.isDefault) {
 			await tx`
 				UPDATE "gym-conversion-tracker"."academy_cameras" c

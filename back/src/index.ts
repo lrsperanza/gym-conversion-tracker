@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { env } from './config/env';
+import { sql } from './db/client';
+import { logDatabaseTarget } from './db/startupReport';
 import { handleError } from './http/errors';
 import type { AppBindings } from './http/types';
 import { adminRoutes } from './routes/admin';
@@ -40,6 +42,13 @@ app.use(
 app.onError(handleError);
 
 app.get('/health', (c) => c.json({ ok: true, service: 'gym-conversion-tracker-back' }));
+
+// Confere a conexão com o Aurora DSQL (credenciais AWS + token IAM). Usado pelo deploy.ps1.
+app.get('/health/db', async (c) => {
+	const started = Date.now();
+	await sql`SELECT 1`;
+	return c.json({ ok: true, db: 'aurora-dsql', ms: Date.now() - started });
+});
 
 app.get('/api/check-connection', (c) =>
 	c.json({
@@ -92,4 +101,5 @@ Bun.serve({
 });
 
 console.info(`API listening on http://localhost:${env.port}`);
+void logDatabaseTarget();
 

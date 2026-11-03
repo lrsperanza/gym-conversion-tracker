@@ -1,0 +1,10 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "dsql:DbConnectAdmin",
+      "Resource": "arn:aws:dsql:sa-east-1:*:cluster/tfugmcbj3hcydxkkk36spdd5dy"
+    }
+  ]
+}

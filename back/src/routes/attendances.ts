@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { sql } from '../db/client';
+import { transaction } from '../db/transaction';
+import { findSimilarNames } from '../services/nameSimilarity';
 import { normalizeEmail, normalizeName, normalizePhone } from '../domain/normalize';
 import { assertCanAccessAcademy, hasAnyRole, requireAuth } from '../http/auth';
 import { badRequest, conflict, forbidden, notFound } from '../http/errors';
@@ -39,14 +41,19 @@ attendanceRoutes.get('/leads/duplicates', async (c) => {
 	`;
 
 	const normalizedName = normalizeName(name);
-	const probable = normalizedName
-		? await sql`
-			SELECT *, similarity("normalized_name", ${normalizedName}) AS score
-			FROM "gym-conversion-tracker"."leads"
-			WHERE "normalized_name" % ${normalizedName}
-			ORDER BY score DESC
-			LIMIT 10
-		`
+	// Similaridade de nome (pg_trgm) calculada na aplicação: o Aurora DSQL não tem extensões.
+	const nameMatches = normalizedName ? await findSimilarNames('leads', normalizedName, 10) : [];
+	const scoreById = new Map(nameMatches.map((match) => [match.id, match.score]));
+	const probable = nameMatches.length
+		? (
+				await sql<Array<Record<string, unknown> & { id: string }>>`
+					SELECT *
+					FROM "gym-conversion-tracker"."leads"
+					WHERE "id" = ANY (${nameMatches.map((match) => match.id)}::uuid[])
+				`
+			)
+				.map((lead) => ({ ...lead, score: scoreById.get(lead.id) ?? 0 }))
+				.sort((a, b) => b.score - a.score)
 		: [];
 
 	await audit({ actorUserId: user.id, action: 'lead.duplicate_check', entityType: 'lead', payload: { name, email, phone: phone?.e164 }, c });
@@ -146,7 +153,7 @@ attendanceRoutes.post('/attendances', async (c) => {
 		if (duplicate) throw conflict('Provável duplicidade encontrada. Use o lead existente ou revise o atendimento.', duplicate);
 	}
 
-	const result = await sql.begin(async (tx) => {
+	const result = await transaction(async (tx) => {
 		const [lead] = input.leadId
 			? await tx`SELECT "id" FROM "gym-conversion-tracker"."leads" WHERE "id" = ${input.leadId}`
 			: await tx<Array<{ id: string }>>`
@@ -216,7 +223,7 @@ attendanceRoutes.post('/attendances/:id/merge-lead', async (c) => {
 		}
 	}
 
-	const result = await sql.begin(async (tx) => {
+	const result = await transaction(async (tx) => {
 		if (updates.whatsapp_e164 || updates.email) {
 			const [duplicate] = await tx`
 				SELECT "id", "name", "whatsapp_e164", "email"
@@ -372,6 +379,12 @@ attendanceRoutes.get('/leads', async (c) => {
 	const phoneDigits = search.replace(/\D/g, '');
 	const phonePattern = `%${phoneDigits}%`;
 	const canSeeAllLeads = hasAnyRole(user, ['ADMIN', 'SOCIO']);
+	// Equivalente ao `normalized_name % busca` do pg_trgm (o DSQL não tem extensões): ids que passam
+	// do limite, já ordenados da maior para a menor similaridade.
+	const similarLeadIds = normalizedSearch ? (await findSimilarNames('leads', normalizedSearch)).map((match) => match.id) : [];
+	const similarReceptionistIds = normalizedSearch
+		? (await findSimilarNames('users', normalizedSearch)).map((match) => match.id)
+		: [];
 
 	const rows = await sql`
 		SELECT
@@ -472,7 +485,7 @@ attendanceRoutes.get('/leads', async (c) => {
 			AND (${scheduledOnly} = false OR next_schedule."scheduled_for" IS NOT NULL)
 		AND (
 			${search || null}::text IS NULL
-			OR (${normalizedSearch || null}::text IS NOT NULL AND l."normalized_name" % ${normalizedSearch || null})
+			OR l."id" = ANY (${similarLeadIds}::uuid[])
 			OR l."name" ILIKE ${searchPattern}
 			OR l."email" ILIKE ${searchPattern}
 			OR (${phoneDigits || null}::text IS NOT NULL AND l."whatsapp_e164" ILIKE ${phonePattern})
@@ -484,13 +497,13 @@ attendanceRoutes.get('/leads', async (c) => {
 				WHERE receptionist_attendance."lead_id" = l."id"
 					AND (
 						receptionist."name" ILIKE ${searchPattern}
-						OR (${normalizedSearch || null}::text IS NOT NULL AND receptionist."normalized_name" % ${normalizedSearch || null})
+						OR receptionist."id" = ANY (${similarReceptionistIds}::uuid[])
 					)
 			)
 		)
 		ORDER BY
 			CASE WHEN ${scheduledOnly} THEN next_schedule."scheduled_for" END ASC NULLS LAST,
-			CASE WHEN ${normalizedSearch || null}::text IS NOT NULL THEN similarity(l."normalized_name", ${normalizedSearch || null}) END DESC NULLS LAST,
+			array_position(${similarLeadIds}::uuid[], l."id") ASC NULLS LAST,
 			last_attendance."started_at" DESC NULLS LAST,
 			l."updated_at" DESC
 		LIMIT ${pageSize}
@@ -640,7 +653,7 @@ attendanceRoutes.post('/attendances/:id/events', async (c) => {
 	if (!attendance) throw notFound();
 	if (attendance.receptionist_id !== user.id) assertCanAccessAcademy(user, attendance.academy_id);
 
-	const result = await sql.begin(async (tx) => {
+	const result = await transaction(async (tx) => {
 		if (input.type === 'REOPEN') {
 			const [event] = await tx<Array<{ id: string }>>`
 				INSERT INTO "gym-conversion-tracker"."attendance_events" ("attendance_id", "actor_user_id", "type", "description")

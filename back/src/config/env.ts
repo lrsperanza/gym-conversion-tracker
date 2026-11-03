@@ -10,6 +10,11 @@ const rawEnvSchema = z.object({
 		.enum(['true', 'false'])
 		.default('false')
 		.transform((value) => value === 'true'),
+	// Banco de produção: Aurora DSQL, autenticado com token IAM (credenciais AWS padrão do SDK:
+	// AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY ou AWS_PROFILE).
+	DSQL_ENDPOINT: z.string().trim().default(''),
+	DSQL_REGION: z.string().trim().default(''),
+	DSQL_USER: z.string().trim().default('admin'),
 	PORT: z.coerce.number().int().positive().optional(),
 	API_PORT: z.coerce.number().int().positive().default(3000),
 	CORS_ORIGIN: z.string().default('http://localhost:5173'),
@@ -50,6 +55,16 @@ export const env = {
 	port: parsed.PORT ?? parsed.API_PORT,
 	corsOrigin: parsed.CORS_ORIGIN,
 	appUrl: parsed.APP_URL.replace(/\/$/, ''),
+	dsql: {
+		endpoint: parsed.DSQL_ENDPOINT,
+		region:
+			parsed.DSQL_REGION ||
+			parsed.DSQL_ENDPOINT.match(/\.dsql\.([a-z0-9-]+)\.on\.aws$/)?.[1] ||
+			Bun.env.AWS_REGION ||
+			'',
+		user: parsed.DSQL_USER
+	},
+	/** Aurora antigo: só o script de migração para o DSQL (src/scripts/migrate-aurora-to-dsql.ts) e o drizzle-kit leem. */
 	postgres: {
 		host: parsed.PostgreHost,
 		port: parsed.PostgrePort,

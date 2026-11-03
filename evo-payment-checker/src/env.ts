@@ -12,7 +12,20 @@ function int(value: string | undefined, fallback: number): number {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+const dsqlEndpoint = (Bun.env.DSQL_ENDPOINT ?? '').trim();
+
 export const env = {
+	/** Aurora DSQL, autenticado com token IAM (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY ou AWS_PROFILE). */
+	dsql: {
+		endpoint: dsqlEndpoint,
+		region:
+			(Bun.env.DSQL_REGION ?? '').trim() ||
+			dsqlEndpoint.match(/\.dsql\.([a-z0-9-]+)\.on\.aws$/)?.[1] ||
+			Bun.env.AWS_REGION ||
+			'',
+		user: (Bun.env.DSQL_USER ?? '').trim() || 'admin'
+	},
+	/** Aurora antigo (não é mais usado: o banco agora é o DSQL). */
 	postgres: {
 		host: Bun.env.PostgreHost ?? 'localhost',
 		port: int(Bun.env.PostgrePort, 5432),

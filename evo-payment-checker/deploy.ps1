@@ -40,7 +40,9 @@ $TIME_ZONE = "America/Sao_Paulo"
 $IMAGE = "$REGISTRY/evo-payment-checker"
 $GCLOUD = "gcloud.cmd"
 # Variaveis que o job precisa e que ja existem no servico do back.
-$SHARED_ENV = @("PostgreHost", "PostgrePort", "PostgreDatabase", "PostgreUser", "PostgrePassword", "PostgreSSL", "EVO_CRED_KEY")
+$SHARED_ENV = @("DSQL_ENDPOINT", "DSQL_REGION", "DSQL_USER", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "EVO_CRED_KEY")
+# Opcionais: se faltarem no servico, o job usa os mesmos defaults do back (regiao deduzida do endpoint, usuario admin).
+$OPTIONAL_ENV = @("DSQL_REGION", "DSQL_USER")
 
 $ROOT = Resolve-Path (Join-Path $PSScriptRoot "..")
 $TIMESTAMP = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -113,10 +115,8 @@ $secrets = @()
 foreach ($name in $SHARED_ENV) {
     $item = $container.env | Where-Object { $_.name -eq $name } | Select-Object -First 1
     if (-not $item) {
-        # Opcionais: ausentes no servico, o back usa os defaults (5432, banco/usuario "postgres", sem SSL);
-        # o job usa os mesmos defaults em src/env.ts.
-        if (@("PostgrePort", "PostgreSSL", "PostgreDatabase", "PostgreUser") -contains $name) { continue }
-        Fail "Variavel $name nao encontrada no servico $BACK_SERVICE."
+        if ($OPTIONAL_ENV -contains $name) { continue }
+        Fail "Variavel $name nao encontrada no servico $BACK_SERVICE. Faca o deploy do back (back\deploy.ps1) antes."
     }
     if ($item.valueFrom -and $item.valueFrom.secretKeyRef) {
         $ref = $item.valueFrom.secretKeyRef

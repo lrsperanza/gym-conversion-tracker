@@ -168,12 +168,12 @@ async function markMissing(row: AttendanceAudioRow, window: AudioWindow, userId:
 	await sql`
 		INSERT INTO "gym-conversion-tracker"."attendance_audio_parts"
 			("attendance_id", "academy_id", "part", "status", "close_event_id", "window_start", "window_end", "recorded_by_user_id", "device_id", "covered_seconds", "gaps", "participants")
-		SELECT ${row.id}, ${row.academy_id}, ${window.part}::"gym-conversion-tracker"."audio_part", 'MISSING', ${window.part === 'HEAD' ? null : row.close_event_id}, ${window.windowStart.toISOString()}::timestamptz, ${window.windowEnd.toISOString()}::timestamptz, ${userId}, ${deviceId}, 0, ${gaps}::jsonb, ${payload}::jsonb
+		SELECT ${row.id}, ${row.academy_id}, ${window.part}::text, 'MISSING', ${window.part === 'HEAD' ? null : row.close_event_id}, ${window.windowStart.toISOString()}::timestamptz, ${window.windowEnd.toISOString()}::timestamptz, ${userId}, ${deviceId}, 0, ${gaps}::jsonb, ${payload}::jsonb
 		WHERE NOT EXISTS (
 			SELECT 1
 			FROM "gym-conversion-tracker"."attendance_audio_parts"
 			WHERE "attendance_id" = ${row.id}
-				AND "part" = ${window.part}::"gym-conversion-tracker"."audio_part"
+				AND "part" = ${window.part}::text
 				AND "superseded_at" IS NULL
 		)
 	`;
@@ -274,7 +274,7 @@ audioRoutes.post('/attendances/:id/audio', async (c) => {
 		SELECT "id", "status"
 		FROM "gym-conversion-tracker"."attendance_audio_parts"
 		WHERE "attendance_id" = ${attendanceId}
-			AND "part" = ${meta.part}::"gym-conversion-tracker"."audio_part"
+			AND "part" = ${meta.part}::text
 			AND "superseded_at" IS NULL
 		LIMIT 1
 	`;
@@ -334,7 +334,7 @@ audioRoutes.post('/attendances/:id/audio', async (c) => {
 		const [created] = await sql<Array<{ id: string }>>`
 			INSERT INTO "gym-conversion-tracker"."attendance_audio_parts"
 				("id", "attendance_id", "academy_id", "part", "status", "close_event_id", "window_start", "window_end", "recorded_by_user_id", "device_id", "device_label", "covered_seconds", "gaps", "blob_name", "mime", "size_bytes", "sha256", "participants")
-			VALUES (${partId}, ${attendanceId}, ${row.academy_id}, ${meta.part}::"gym-conversion-tracker"."audio_part", 'UPLOADED', ${meta.part === 'HEAD' ? null : row.close_event_id}, ${window.windowStart.toISOString()}::timestamptz, ${window.windowEnd.toISOString()}::timestamptz, ${user.id}, ${meta.deviceId}, ${meta.deviceLabel ?? null}, ${coverage.coveredSeconds}, ${gaps}::jsonb, ${blobName}, ${'audio/webm;codecs=opus'}, ${output.size}, ${hash}, ${payload}::jsonb)
+			VALUES (${partId}, ${attendanceId}, ${row.academy_id}, ${meta.part}::text, 'UPLOADED', ${meta.part === 'HEAD' ? null : row.close_event_id}, ${window.windowStart.toISOString()}::timestamptz, ${window.windowEnd.toISOString()}::timestamptz, ${user.id}, ${meta.deviceId}, ${meta.deviceLabel ?? null}, ${coverage.coveredSeconds}, ${gaps}::jsonb, ${blobName}, ${'audio/webm;codecs=opus'}, ${output.size}, ${hash}, ${payload}::jsonb)
 			RETURNING "id"
 		`.catch((error: unknown) => {
 			if ((error as { code?: string })?.code === '23505') throw conflict('Audio ja enviado para esta janela.');

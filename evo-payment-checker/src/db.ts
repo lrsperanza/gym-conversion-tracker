@@ -1,19 +1,45 @@
 import postgres from 'postgres';
+import { DsqlSigner } from '@aws-sdk/dsql-signer';
 import { decryptAesGcm } from './crypto.ts';
 import { env } from './env.ts';
 import type { PaymentStatus } from './matching.ts';
 
+function dsqlConnection() {
+	const { endpoint, region, user } = env.dsql;
+	if (!endpoint) throw new Error('DSQL_ENDPOINT não configurado (mesmo valor do back/.env).');
+	if (!region) throw new Error(`Não foi possível deduzir a região de DSQL_ENDPOINT (${endpoint}); defina DSQL_REGION.`);
+	const signer = new DsqlSigner({ hostname: endpoint, region });
+	return {
+		host: endpoint,
+		port: 5432,
+		database: 'postgres',
+		username: user,
+		password: () => (user === 'admin' ? signer.getDbConnectAdminAuthToken() : signer.getDbConnectAuthToken()),
+		ssl: true
+	} as const;
+}
+
 export const sql = postgres({
-	host: env.postgres.host,
-	port: env.postgres.port,
-	database: env.postgres.database,
-	username: env.postgres.user,
-	password: env.postgres.password,
-	ssl: env.postgres.ssl ? { rejectUnauthorized: false } : false,
+	...dsqlConnection(),
 	max: 2,
 	connect_timeout: 30,
-	prepare: false
+	prepare: false,
+	max_lifetime: 45 * 60 // o DSQL encerra conexões com 1 h
 });
+
+/** Aurora DSQL: conflito de concorrência otimista (SQLSTATE 40001 / OC000 / OC001) — refazer resolve. */
+async function withConflictRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await fn();
+		} catch (error) {
+			const err = error as { code?: unknown; message?: unknown };
+			const conflict = err?.code === '40001' || /\(OC00\d\)/.test(String(err?.message ?? ''));
+			if (!conflict || attempt >= attempts) throw error;
+			await new Promise((resolve) => setTimeout(resolve, Math.min(1000, 25 * 2 ** attempt) * (0.5 + Math.random())));
+		}
+	}
+}
 
 export type EvoCredentials = { usuario: string; senha: string; segredoTotp?: string };
 
@@ -117,7 +143,7 @@ export type SaleUpdate = {
 };
 
 export async function saveSaleCheck(saleId: string, update: SaleUpdate): Promise<void> {
-	await sql`
+	await withConflictRetry(() => sql`
 		UPDATE "gym-conversion-tracker"."sales"
 		SET "payment_status" = ${update.status},
 			"payment_checked_at" = now(),
@@ -129,7 +155,7 @@ export async function saveSaleCheck(saleId: string, update: SaleUpdate): Promise
 			"evo_paid_cents" = ${update.evoPaidCents ?? null}::int,
 			"evo_sold_at" = ${update.evoSoldAt?.toISOString() ?? null}::timestamptz
 		WHERE "id" = ${saleId}
-	`;
+	`);
 }
 
 export async function closeDb(): Promise<void> {

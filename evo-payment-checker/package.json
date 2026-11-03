@@ -9,6 +9,7 @@
 		"test": "bun test"
 	},
 	"dependencies": {
+		"@aws-sdk/dsql-signer": "^3.700.0",
 		"evo-puppeteer": "file:../evo-puppeteer",
 		"postgres": "^3.4.7",
 		"puppeteer-core": "^25.4.0"

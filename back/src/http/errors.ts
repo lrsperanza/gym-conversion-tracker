@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import { ZodError } from 'zod';
+import { isConcurrencyConflict } from '../db/conflict';
 
 type ErrorStatus = 400 | 401 | 403 | 404 | 409 | 422 | 500 | 503;
 
@@ -70,6 +71,14 @@ export function handleError(error: Error, c: Context) {
 
 	if (error instanceof SyntaxError) {
 		return c.json({ error: { code: 'BAD_REQUEST', message: 'Corpo da requisição inválido: JSON malformado.' } }, 400);
+	}
+
+	if (isConcurrencyConflict(error)) {
+		// Aurora DSQL (concorrência otimista): outra requisição alterou as mesmas linhas ao mesmo tempo.
+		return c.json(
+			{ error: { code: 'CONCURRENT_UPDATE', message: 'Outra alteração foi salva ao mesmo tempo. Tente novamente.' } },
+			409
+		);
 	}
 
 	if (isDbUnavailable(error)) {

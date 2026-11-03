@@ -36,7 +36,13 @@ Bootstrap do zero: `.env` → `db:migrate` → `db:seed` → `bootstrap:admin` �
 
 ## Banco
 
-**Postgres**, schema **`"gym-conversion-tracker"`** (nunca `public`). Extensões exigidas: `pgcrypto`, `pg_trgm`.
+**Aurora DSQL** (PostgreSQL-compatível, migrado do Aurora PostgreSQL em nov/2026), schema **`"gym-conversion-tracker"`** (nunca `public`). Conexão em `src/db/client.ts` com token IAM gerado pelo `@aws-sdk/dsql-signer` a partir de `DSQL_ENDPOINT` + credenciais AWS (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`). As variáveis `Postgre*` só servem ao script `bun run db:migrate-to-dsql` (Aurora → DSQL).
+
+Diferenças do DSQL que afetam código:
+- **Sem enums nem extensões.** As colunas que eram enum são `text` + `CHECK (col IN (...))`; cast para tipo do schema (`::"gym-conversion-tracker".x`) não existe — use `::text`. `pg_trgm` não existe: use `"gym-conversion-tracker".similarity(a, b)` (mesmo algoritmo, SQL puro) e `>= 0.3` no lugar de `%`. Sem índice GIN: só B-tree.
+- **Concorrência otimista.** Conflito vira erro `40001` (OC000/OC001) em vez de lock. Transação: use `transaction()` de `src/db/transaction.ts` (refaz sozinha; callback só com banco). Fora de transação, o `handleError` devolve 409 `CONCURRENT_UPDATE`.
+- **Limites:** 3.000 linhas e 10 MiB por transação, 2 MiB por linha, conexão cai com 1 h, sem tabela temporária, sem PL/pgSQL, collation só `C`.
+- **Migrations novas** (`drizzle/*.sql`, rodadas por `db:migrate`): cada comando roda sozinho, sem transação; escreva comandos idempotentes (`IF NOT EXISTS`), sem `DO $$`, `CREATE TYPE` ou `TRUNCATE`; índice em tabela com dados é `CREATE INDEX ASYNC`. As 0000–0011 são do Aurora e já constam em `_migrations`.
 
 **Regra mais importante do repo:** Drizzle é usado **só para definir schema e tipos**. Todo acesso em runtime usa a tag `sql` de `src/db/client.ts` com SQL cru, sempre qualificando `"gym-conversion-tracker"."tabela"`. O export `db` (drizzle) existe mas não é usado em lugar nenhum — não introduza query builder em handler novo, siga o estilo vizinho.
 
@@ -44,7 +50,7 @@ Tabelas: `academies`, `users`, `user_academy_roles`, `professors`, `leads`, `att
 
 Enums: `role`, `attendance_status`, `presenter`, `attendance_event_type`, `outcome_kind`, `loss_category`, `email_token_purpose`.
 
-Migrations rodam uma vez cada, em transação, registradas em `_migrations`. Não há script de `drizzle-kit generate` no `package.json`; as migrations existentes misturam SQL gerado e escrito à mão.
+Migrations rodam uma vez cada, comando a comando, registradas em `_migrations`. Não há script de `drizzle-kit generate` no `package.json`; as migrations existentes misturam SQL gerado e escrito à mão.
 
 ## HTTP
 
