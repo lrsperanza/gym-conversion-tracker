@@ -11,7 +11,7 @@
 	import { errorMessage, queryString, statusLabel } from '$lib/helpers';
 	import { getSessionContext } from '$lib/session';
 	import type { Academy, AudioSegment, AudioTimeline, AudioTimelineAttendance } from '$lib/types';
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { onDestroy, onMount, tick, untrack } from 'svelte';
 
 	type Track = {
 		key: string;
@@ -57,8 +57,10 @@
 	// The player is plain JS; this counter is bumped on every change so the view re-reads it.
 	let version = $state(0);
 
+	// `+=` reads `version`; untracked so an effect that calls into the player (setSegments) does not
+	// start depending on the counter it bumps, which loops forever.
 	const player = new SegmentPlayer(fetchSegment, () => {
-		version += 1;
+		untrack(() => (version += 1));
 	});
 
 	let tracks = $derived.by(() => {
@@ -144,7 +146,7 @@
 			start: Date.parse(segment.startedAt),
 			end: Date.parse(segment.endedAt)
 		}));
-		player.setSegments(segments);
+		untrack(() => player.setSegments(segments));
 	});
 
 	$effect(() => {

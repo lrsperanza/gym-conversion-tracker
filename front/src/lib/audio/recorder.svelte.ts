@@ -26,6 +26,8 @@ const FALLBACK_MIME = 'audio/webm';
 const AUDIO_BITS_PER_SECOND = 32_000;
 const UPLOAD_INTERVAL_MS = 30_000;
 const MAX_UPLOAD_ATTEMPTS = 20;
+/** Um 4xx pode ser bug do back; dá tempo de corrigir antes de descartar áudio gravado. */
+const GIVE_UP_AFTER_MS = 24 * 60 * 60_000;
 const DRAFT_KEY = 'attendance-quick-draft';
 
 export type AudioRecorderStatus =
@@ -292,9 +294,13 @@ async function uploadSegment(segment: PendingSegment) {
 		payload?.error?.message || `Falha ao enviar áudio (HTTP ${response.status}).`;
 	// 401: sessão caiu; o trecho espera o próximo login. 5xx/429: tenta de novo depois.
 	if (response.status === 401 || response.status === 429 || response.status >= 500) return false;
-	// Outros 4xx não mudam com nova tentativa; desiste do trecho depois de algumas.
-	if (segment.attempts + 1 >= MAX_UPLOAD_ATTEMPTS) await deleteSegment(segment.id);
-	else await markAttempt(segment);
+	// Outros 4xx não mudam com nova tentativa; só desiste de um trecho velho que falhou muitas vezes.
+	const age = Date.now() - Date.parse(segment.startedAt);
+	if (segment.attempts + 1 >= MAX_UPLOAD_ATTEMPTS && age > GIVE_UP_AFTER_MS) {
+		await deleteSegment(segment.id);
+	} else {
+		await markAttempt(segment);
+	}
 	return true;
 }
 

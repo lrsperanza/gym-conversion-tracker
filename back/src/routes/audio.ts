@@ -84,7 +84,9 @@ audioRoutes.post('/audio/segments', async (c) => {
 	}
 
 	const academyId = resolveRecordingAcademy(user, meta.academyId);
-	const mime = (file.type || 'audio/webm').split(';')[0]!.trim().toLowerCase();
+	// O Bun redefine o tipo da parte pela extensão do nome (segment.webm vira video/webm), então o
+	// container vale mais que o prefixo: só existe áudio aqui.
+	const mime = (file.type || 'audio/webm').split(';')[0]!.trim().toLowerCase().replace(/^video\//, 'audio/');
 	const extension = MIME_EXTENSIONS[mime];
 	if (!extension) throw badRequest(`Formato de áudio não suportado: ${mime}.`);
 
@@ -98,7 +100,7 @@ audioRoutes.post('/audio/segments', async (c) => {
 
 	await uploadBlob(env.audio.bucket, objectName, new Uint8Array(await file.arrayBuffer()), {
 		accessToken: await gcpAccessToken(),
-		contentType: file.type || mime,
+		contentType: mime,
 		cacheControl: 'private, max-age=86400',
 		metadata: { userId: user.id, deviceId: meta.deviceId }
 	});
@@ -109,7 +111,7 @@ audioRoutes.post('/audio/segments', async (c) => {
 		VALUES (
 			${academyId}, ${user.id}, ${meta.deviceId}, ${meta.deviceLabel ?? null},
 			${startedAt.toISOString()}::timestamptz, ${endedAt.toISOString()}::timestamptz,
-			${durationMs}, ${objectName}, ${file.type || mime}, ${file.size}
+			${durationMs}, ${objectName}, ${mime}, ${file.size}
 		)
 		ON CONFLICT ("device_id", "started_at") DO NOTHING
 	`;
