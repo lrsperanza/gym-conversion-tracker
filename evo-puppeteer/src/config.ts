@@ -2,6 +2,13 @@ export const LOGIN_URL =
   //'https://evo-abc-2.w12app.com.br/#/acesso/skyfitacademia/autenticacao'
   'https://evo5.w12app.com.br/#/app/skyfitacademia/320/clientes/2054580//perfil';
 
+/**
+ * Tela de login do EVO. Sem sessão, o link direto acima não redireciona mais
+ * para cá (desde nov/2026 o SPA fica só com a casca vazia), então quem detecta
+ * esse estado precisa abrir o login explicitamente.
+ */
+export const AUTH_URL = 'https://evo5.w12app.com.br/#/acesso/skyfitacademia/autenticacao';
+
 export const NOVA_VENDA_PATH =
   '/#/app/skyfitacademia/320/clientes/cadastro/2119153//vendas/nova-venda';
 
