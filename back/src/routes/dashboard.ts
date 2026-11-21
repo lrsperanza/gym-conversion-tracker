@@ -171,7 +171,10 @@ dashboardRoutes.get('/dashboard/summary', async (c) => {
 		ORDER BY 1
 	`;
 
+	const sync = await syncHealth(attendanceScopeSql({ academyId: filters.academyId } as DashboardFilters, null, null, access));
+
 	return c.json({
+		sync,
 		kpi: {
 			...kpi,
 			conversionRate: kpi?.attendances ? kpi.converted / kpi.attendances : 0
@@ -329,6 +332,99 @@ function scheduleScopeSql(filters: Pick<DashboardFilters, 'weekdays' | 'hourFrom
 //
 // Só vendas com pagamento confirmado no EVO (`payment_status = 'PAGO'`) entram em
 // receita e conversão. A conferência é feita pelo job `evo-payment-checker`.
+/** A conferência roda às 01:00 e leva ~15 min; depois disso, folga para não acusar atraso à toa. */
+const SYNC_GRACE_HOURS = 3;
+/** Sem sucesso há mais que isso = pelo menos uma rodada diária perdida. */
+const SYNC_MAX_AGE_HOURS = 27;
+/** Execução "em andamento" há mais que isso = o container morreu no meio. */
+const SYNC_RUNNING_MAX_HOURS = 2;
+
+type SyncRun = {
+	started_at: string;
+	finished_at: string | null;
+	status: 'RUNNING' | 'OK' | 'PARTIAL' | 'FAILED';
+	sales_to_check: number;
+	paid: number;
+	errors: number;
+	failed_units: number;
+	login_method: string | null;
+	message: string | null;
+};
+
+/**
+ * Saúde da conferência de pagamentos com o EVO (`evo-payment-checker`). Se a
+ * conferência falha, vendas ficam "A conferir" e não entram em receita nem
+ * rankings — o dashboard precisa avisar em vez de mostrar números errados.
+ * Os sinais vêm de dois lados: o registro de execuções (motivo da falha) e as
+ * próprias vendas (vendas antigas sem conferir), que acusam o problema mesmo
+ * se o job nem chegou a rodar.
+ */
+async function syncHealth(scope: ReturnType<typeof attendanceScopeSql>) {
+	let lastRun: SyncRun | null = null;
+	let lastSuccessAt: string | null = null;
+	try {
+		const [run] = await sql<SyncRun[]>`
+			SELECT "started_at", "finished_at", "status", "sales_to_check", "paid", "errors", "failed_units", "login_method", "message"
+			FROM "gym-conversion-tracker"."payment_check_runs"
+			ORDER BY "started_at" DESC
+			LIMIT 1
+		`;
+		const [success] = await sql<Array<{ at: string | null }>>`
+			SELECT MAX("finished_at") AS at
+			FROM "gym-conversion-tracker"."payment_check_runs"
+			WHERE "status" IN ('OK', 'PARTIAL')
+		`;
+		lastRun = run ?? null;
+		lastSuccessAt = success?.at ?? null;
+	} catch (error) {
+		// Migration 0013 ainda não aplicada: segue só com o sinal das vendas.
+		console.warn('[dashboard] payment_check_runs indisponível:', (error as Error).message);
+	}
+
+	const [overdue] = await sql<Array<{ sales: number; amount_cents: number; oldest: string | null }>>`
+		SELECT
+			COUNT(*)::int AS sales,
+			COALESCE(SUM(s."amount_cents"), 0)::int AS amount_cents,
+			MIN(s."created_at") AS oldest
+		FROM "gym-conversion-tracker"."sales" s
+		JOIN "gym-conversion-tracker"."attendances" a ON a."id" = s."attendance_id"
+		WHERE ${scope}
+			AND s."payment_status" = 'A_CONFERIR'
+			AND s."created_at" < (
+				date_trunc('day', (now() AT TIME ZONE 'America/Sao_Paulo') - ${`${SYNC_GRACE_HOURS} hours`}::interval)
+				AT TIME ZONE 'America/Sao_Paulo'
+			)
+	`;
+
+	const now = Date.now();
+	const hoursSince = (iso: string | null) => (iso ? (now - new Date(iso).getTime()) / 3_600_000 : Infinity);
+	const problems: string[] = [];
+	if (lastRun?.status === 'FAILED') {
+		problems.push(`A última conferência falhou${lastRun.message ? `: ${lastRun.message}` : '.'}`);
+	} else if (lastRun?.status === 'RUNNING' && hoursSince(lastRun.started_at) > SYNC_RUNNING_MAX_HOURS) {
+		problems.push('A última conferência começou e não terminou.');
+	}
+	if (lastRun && hoursSince(lastSuccessAt) > SYNC_MAX_AGE_HOURS) {
+		problems.push(lastSuccessAt ? 'Nenhuma conferência bem-sucedida nas últimas 24 h.' : 'Nenhuma conferência bem-sucedida registrada.');
+	}
+	if ((overdue?.sales ?? 0) > 0) {
+		problems.push(`${overdue!.sales} venda(s) lançadas antes de hoje ainda não foram conferidas no EVO.`);
+	}
+	const warnings: string[] = [];
+	if (lastRun?.status === 'PARTIAL') {
+		warnings.push(`${lastRun.errors} venda(s) deram erro na última conferência${lastRun.message ? `: ${lastRun.message}` : '.'}`);
+	}
+
+	return {
+		ok: problems.length === 0,
+		problems,
+		warnings,
+		lastRun,
+		lastSuccessAt,
+		overdue: { sales: overdue?.sales ?? 0, amount_cents: overdue?.amount_cents ?? 0, oldest: overdue?.oldest ?? null }
+	};
+}
+
 function dedupedSalesSql(paymentStatuses: PaymentStatus[] = ['PAGO']) {
 	// `evo_cents`/`sold_at`: valor pago e data da venda no EVO quando a venda já foi
 	// confirmada; antes disso, valor e data do lançamento no tracker.

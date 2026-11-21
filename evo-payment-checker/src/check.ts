@@ -12,10 +12,13 @@
 import type { Browser } from 'puppeteer-core';
 import {
 	closeDb,
+	finishRun,
 	loadCredentials,
 	loadSalesToCheck,
 	loadUsedEvoSaleIds,
 	saveSaleCheck,
+	startRun,
+	type RunResult,
 	type SaleToCheck
 } from './db.ts';
 import { env } from './env.ts';
@@ -110,18 +113,55 @@ async function checkSale(
 	});
 }
 
+type Outcome = Omit<RunResult, 'status'> & { exitCode: number };
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
-	console.info(`[check] início ${new Date().toISOString()} dryRun=${args.dryRun} headless=${env.headless || args.headless} db=${env.postgres.host}`);
+	console.info(`[check] início ${new Date().toISOString()} dryRun=${args.dryRun} headless=${env.headless || args.headless}`);
 	if (args.headless) (env as { headless: boolean }).headless = true;
 
+	// Dry-run e conferência de uma venda só não contam como a rodada do dia no dashboard.
+	const runId = args.dryRun || args.saleId ? null : await startRun();
+	const outcome: Outcome = {
+		exitCode: 1,
+		salesToCheck: 0,
+		paid: 0,
+		pending: 0,
+		notPaid: 0,
+		errors: 0,
+		failedUnits: 0,
+		loginMethod: null,
+		message: null
+	};
+	try {
+		await checkAll(args, outcome);
+	} catch (error) {
+		outcome.exitCode = 1;
+		outcome.message = `Falha geral: ${(error as Error)?.message ?? String(error)}`;
+		console.error('[check] falha geral:', error);
+	}
+	const status = outcome.failedUnits > 0 || outcome.message?.startsWith('Falha geral')
+		? 'FAILED'
+		: outcome.errors > 0
+			? 'PARTIAL'
+			: 'OK';
+	await finishRun(runId, { ...outcome, status });
+	return outcome.exitCode;
+}
+
+async function checkAll(args: Args, outcome: Outcome) {
 	const sales = await loadSalesToCheck({ includeToday: args.includeToday, saleId: args.saleId });
+	outcome.salesToCheck = sales.length;
 	console.info(`[check] ${sales.length} venda(s) para conferir${args.dryRun ? ' (dry-run)' : ''}.`);
-	if (sales.length === 0) return 0;
+	if (sales.length === 0) {
+		outcome.exitCode = 0;
+		return;
+	}
 
 	const credentials = await loadCredentials(env.checkerUserEmail);
 	const usedEvoSaleIds = await loadUsedEvoSaleIds();
 	const summary = { PAGO: 0, PAGAMENTO_PENDENTE: 0, NAO_PAGO: 0, erros: 0 };
+	const messages: string[] = [];
 	let failedUnits = 0;
 
 	const byUnit = new Map<string, SaleToCheck[]>();
@@ -137,8 +177,10 @@ async function main() {
 			let session: EvoSession;
 			try {
 				session = await EvoSession.open(browser, credentials, unit);
+				outcome.loginMethod = session.loginMethod;
 			} catch (error) {
 				failedUnits += 1;
+				messages.push(`Unidade "${unit || '(única)'}": ${(error as Error).message}`);
 				console.error(`[check] não foi possível logar na unidade "${unit}":`, error);
 				continue; // vendas dessa unidade ficam como estão e voltam amanhã
 			}
@@ -149,6 +191,7 @@ async function main() {
 			try {
 				report = await session.salesReport(new Date(oldest - env.lookbackDays * DAY_MS), new Date());
 			} catch (error) {
+				messages.push(`Relatório Gerencial › Vendas indisponível: ${(error as Error).message}`);
 				console.warn('[check] relatório Gerencial › Vendas indisponível; seguindo só com a busca de clientes:', error);
 			}
 
@@ -168,6 +211,7 @@ async function main() {
 						if (!args.dryRun) await saveSaleCheck(sale.id, decision);
 					} catch (error) {
 						summary.erros += 1;
+						if (summary.erros === 1) messages.push(`Erro conferindo venda: ${(error as Error).message}`);
 						console.error(`[check] erro conferindo a venda ${sale.id}; status mantido:`, error);
 					}
 				}
@@ -180,7 +224,15 @@ async function main() {
 	}
 
 	console.info(`[check] resumo: ${JSON.stringify({ ...summary, unidadesComFalha: failedUnits })}`);
-	return failedUnits > 0 || summary.erros > 0 ? 1 : 0;
+	Object.assign(outcome, {
+		paid: summary.PAGO,
+		pending: summary.PAGAMENTO_PENDENTE,
+		notPaid: summary.NAO_PAGO,
+		errors: summary.erros,
+		failedUnits,
+		message: messages.length ? messages.join(' | ') : null,
+		exitCode: failedUnits > 0 || summary.erros > 0 ? 1 : 0
+	});
 }
 
 main()
@@ -188,7 +240,7 @@ main()
 		process.exitCode = code;
 	})
 	.catch((error) => {
-		console.error('[check] falha geral:', error);
+		console.error('[check] falha ao registrar a execução:', error);
 		process.exitCode = 1;
 	})
 	.finally(closeDb);

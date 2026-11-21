@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { garantirSessao, LOGIN_URL, sleep } from 'evo-puppeteer';
+import { AUTH_URL, codigoTotpFresco, garantirSessao, LOGIN_URL, sleep } from 'evo-puppeteer';
 import puppeteer, { type Browser, type BrowserContext, type HTTPRequest, type Page } from 'puppeteer-core';
 import type { EvoCredentials } from './db.ts';
 import { env } from './env.ts';
@@ -67,6 +67,32 @@ async function preparePage(page: Page): Promise<Page> {
 
 let lastLoginAt = 0;
 
+/** O mesmo código 2FA não pode ser usado em dois logins seguidos: espera a próxima janela de 30s. */
+async function waitTotpWindow(): Promise<void> {
+	const sinceLast = Date.now() - lastLoginAt;
+	if (lastLoginAt && sinceLast < 31_000) await sleep(31_000 - sinceLast);
+}
+
+/** Parte do `usuario` devolvido pelo `POST /api/v1/auth/login` (etapa final). */
+type EvoLoginUser = {
+	idFilial?: number;
+	idFilialCripto?: string;
+	idW12Cripto?: string;
+	idW12?: number;
+	nomeFilial?: string;
+	tokenEvo3?: string;
+	filiais?: unknown[];
+};
+
+type EvoLoginResponse = { chaveOTP?: string; tokenAcesso?: string; usuario?: EvoLoginUser };
+
+const normalizeUnit = (value: string) =>
+	value
+		.normalize('NFD')
+		.replace(/[̀-ͯ]/g, '')
+		.toLowerCase()
+		.trim();
+
 /**
  * Sessão EVO logada numa unidade. Cada unidade ganha um contexto anônimo
  * próprio: trocar de unidade dentro da mesma sessão exigiria refazer o login
@@ -77,6 +103,10 @@ export class EvoSession {
 	private apiOrigin = '';
 	/** Aba logada no EVO 3 (relatórios gerenciais legados), aberta sob demanda. */
 	private evo3Page: Page | null = null;
+	/** Token de SSO do EVO 3 quando o login foi pela API (sem o storage do SPA). */
+	private tokenEvo3: string | null = null;
+	/** Por onde a última sessão entrou — vai para `payment_check_runs`. */
+	loginMethod: 'api' | 'tela' | null = null;
 
 	private constructor(
 		private readonly context: BrowserContext,
@@ -117,13 +147,103 @@ export class EvoSession {
 		this.apiOrigin = new URL(url).origin;
 	}
 
+	/**
+	 * Login pela API do EVO (o mesmo `POST /api/v1/auth/login` que a tela chama),
+	 * que não depende de seletores nem do layout. A tela fica só de reserva para
+	 * quando a API mudar.
+	 */
 	private async login(): Promise<void> {
-		// O mesmo código 2FA não pode ser usado em dois logins seguidos: se a
-		// unidade anterior acabou de logar, espera a próxima janela de 30s.
-		const sinceLast = Date.now() - lastLoginAt;
-		if (lastLoginAt && sinceLast < 31_000) await sleep(31_000 - sinceLast);
+		await waitTotpWindow();
+		let apiError: unknown;
+		try {
+			await this.loginViaApi();
+			this.loginMethod = 'api';
+			return;
+		} catch (error) {
+			apiError = error;
+			console.warn(`[evo] login pela API falhou (${(error as Error).message}); tentando pela tela.`);
+		} finally {
+			lastLoginAt = Date.now();
+		}
+		await waitTotpWindow();
+		try {
+			await this.loginViaScreen();
+			this.loginMethod = 'tela';
+		} catch (error) {
+			throw new Error(
+				`Login no EVO falhou pela API (${(apiError as Error).message}) e pela tela (${(error as Error).message}).`
+			);
+		}
+	}
 
-		console.info(`[evo] login na unidade "${this.unit || '(única)'}" (user-agent: ${realUserAgent || 'padrão'})`);
+	private async loginViaApi(): Promise<void> {
+		const dns = /#\/(?:app|acesso)\/([^/]+)\//.exec(AUTH_URL)?.[1];
+		if (!dns) throw new Error(`não deu para ler o DNS de ${AUTH_URL}`);
+		console.info(`[evo] login pela API na unidade "${this.unit || '(única)'}"`);
+		// A chamada sai de dentro de uma página do EVO para passar pelo Cloudflare e pelo CORS como o SPA.
+		this.headers = null;
+		this.tokenEvo3 = null;
+		await this.page.goto(AUTH_URL, { waitUntil: 'domcontentloaded', timeout: env.timeoutMs });
+		const fusoHorario = await this.page.evaluate(() => new Date().getTimezoneOffset()).catch(() => 180);
+		const base = {
+			dns,
+			login: this.credentials.usuario,
+			senha: this.credentials.senha,
+			fusoHorario,
+			gofit: false,
+			idFilial: null
+		};
+		let result = await this.loginStep({ ...base, etapaAtual: 1, chaveOTP: '' });
+		if (!result.tokenAcesso) {
+			if (!result.chaveOTP) throw new Error('etapa 1 do login não devolveu token nem chaveOTP');
+			if (!this.credentials.segredoTotp) throw new Error('o EVO pede 2FA e não há segredo TOTP salvo');
+			const codigoDuploFator = await codigoTotpFresco(this.credentials.segredoTotp);
+			result = await this.loginStep({ ...base, codigoDuploFator, etapaAtual: 3, chaveOTP: result.chaveOTP });
+		}
+		const user = result.usuario;
+		if (!result.tokenAcesso || !user?.idFilial) throw new Error('login sem tokenAcesso ou usuário');
+		if (
+			this.unit &&
+			(user.filiais?.length ?? 0) > 1 &&
+			!normalizeUnit(user.nomeFilial ?? '').includes(normalizeUnit(this.unit))
+		) {
+			throw new Error(`a conta abriu a unidade "${user.nomeFilial}", não "${this.unit}"`);
+		}
+		this.headers = {
+			accept: 'application/json, text/plain, */*',
+			'accept-language': 'pt-BR',
+			authorization: `Bearer ${result.tokenAcesso}`,
+			dns,
+			filial: String(user.idFilial),
+			chaveidfilial: String(user.idFilialCripto ?? ''),
+			chaveidw12: String(user.idW12Cripto ?? ''),
+			idw12: String(user.idW12 ?? '')
+		};
+		this.apiOrigin = DEFAULT_API_ORIGIN;
+		this.tokenEvo3 = user.tokenEvo3 || null;
+		await this.request('GET', '/api/v1/auth/logado', undefined, false);
+		console.info(`[evo] sessão pronta pela API (filial ${user.idFilial}).`);
+	}
+
+	/** Uma etapa do login; o corpo leva a senha, então nunca vai para o log. */
+	private async loginStep(body: Record<string, unknown>): Promise<EvoLoginResponse> {
+		const result = await this.page.evaluate(
+			async (url: string, body: string) => {
+				const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+				return { status: response.status, text: await response.text() };
+			},
+			`${DEFAULT_API_ORIGIN}/api/v1/auth/login`,
+			JSON.stringify(body)
+		);
+		if (result.status !== 200) {
+			throw new Error(`auth/login etapa ${body.etapaAtual} → HTTP ${result.status}: ${result.text.slice(0, 200)}`);
+		}
+		return JSON.parse(result.text) as EvoLoginResponse;
+	}
+
+	/** Caminho antigo: preenche a tela de login com o `evo-puppeteer` e captura os headers do SPA. */
+	private async loginViaScreen(): Promise<void> {
+		console.info(`[evo] login pela tela na unidade "${this.unit || '(única)'}" (user-agent: ${realUserAgent || 'padrão'})`);
 		// Diagnóstico: durante o login, registra a tela sempre que o texto mudar.
 		let lastSeen = '';
 		const watcher = setInterval(() => {
@@ -371,15 +491,21 @@ export class EvoSession {
 
 		// Caminho direto: o mesmo endereço de SSO que o EVO 5 põe no iframe, montado com
 		// o token que ele guarda em localStorage (já vem codificado para URL).
-		const tokenEvo3 = await this.page
-			.evaluate(() => {
-				try {
-					return JSON.parse(localStorage.getItem('evo.tokenEvo3') ?? 'null') as string | null;
-				} catch {
-					return null;
-				}
-			})
-			.catch(() => null);
+		// Login pela API: o token vem no usuário, cru. Login pela tela: o SPA guarda
+		// o mesmo token já codificado para URL.
+		const tokenEvo3 = this.tokenEvo3
+			? /%[0-9a-f]{2}/i.test(this.tokenEvo3)
+				? this.tokenEvo3
+				: encodeURIComponent(this.tokenEvo3)
+			: await this.page
+					.evaluate(() => {
+						try {
+							return JSON.parse(localStorage.getItem('evo.tokenEvo3') ?? 'null') as string | null;
+						} catch {
+							return null;
+						}
+					})
+					.catch(() => null);
 		if (tokenEvo3) {
 			const url =
 				`https://evo3.w12app.com.br/Login/LogarEvo3?TokenEvo3=${tokenEvo3}&idFilial=${filial}` +

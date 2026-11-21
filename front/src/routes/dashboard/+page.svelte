@@ -7,6 +7,7 @@
 	import MetricTable from '$lib/components/MetricTable.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import PaymentBadge from '$lib/components/PaymentBadge.svelte';
+	import SyncAlert from '$lib/components/SyncAlert.svelte';
 	import {
 		channelLabel,
 		dateToIso,
@@ -328,6 +329,8 @@
 			</div>
 		</div>
 
+		<SyncAlert sync={dashboard?.sync} />
+
 		<Notice message={dashboardMessage} />
 
 		<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -383,6 +386,9 @@
 				</p>
 				<p class="text-xs text-slate-400">
 					{dashboard?.payments?.A_CONFERIR.sales ?? 0} vendas · conferidas toda madrugada
+					{#if dashboard?.sync?.lastSuccessAt}
+						· última conferência {dateTime(dashboard.sync.lastSuccessAt)}
+					{/if}
 				</p>
 			</div>
 			<div class="rounded-3xl bg-amber-50 p-5 shadow-sm ring-1 ring-amber-200">

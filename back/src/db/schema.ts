@@ -445,3 +445,27 @@ export const audioSegments = gym.table(
 		index('audio_segments_started_idx').on(table.startedAt)
 	]
 );
+
+/**
+ * Execuções do `evo-payment-checker` (migration `0013_payment_check_runs.sql`).
+ * O dashboard avisa quando a última falhou ou quando não há sucesso recente.
+ * `status`: RUNNING | OK | PARTIAL | FAILED (text + CHECK, como as demais no DSQL).
+ */
+export const paymentCheckRuns = gym.table(
+	'payment_check_runs',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+		finishedAt: timestamp('finished_at', { withTimezone: true }),
+		status: text('status').notNull().default('RUNNING'),
+		salesToCheck: integer('sales_to_check').notNull().default(0),
+		paid: integer('paid').notNull().default(0),
+		pending: integer('pending').notNull().default(0),
+		notPaid: integer('not_paid').notNull().default(0),
+		errors: integer('errors').notNull().default(0),
+		failedUnits: integer('failed_units').notNull().default(0),
+		loginMethod: text('login_method'),
+		message: text('message')
+	},
+	(table) => [index('payment_check_runs_started_idx').on(table.startedAt)]
+);
