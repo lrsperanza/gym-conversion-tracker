@@ -5,6 +5,7 @@ import { AUTH_URL, codigoTotpFresco, garantirSessao, LOGIN_URL, sleep } from 'ev
 import puppeteer, { type Browser, type BrowserContext, type HTTPRequest, type Page } from 'puppeteer-core';
 import type { EvoCredentials } from './db.ts';
 import { env } from './env.ts';
+import { nextLoginStep, type EvoLoginResponse } from './evo-login.ts';
 import type { EvoClient, EvoReportRow, EvoVenda } from './matching.ts';
 
 /**
@@ -72,19 +73,6 @@ async function waitTotpWindow(): Promise<void> {
 	const sinceLast = Date.now() - lastLoginAt;
 	if (lastLoginAt && sinceLast < 31_000) await sleep(31_000 - sinceLast);
 }
-
-/** Parte do `usuario` devolvido pelo `POST /api/v1/auth/login` (etapa final). */
-type EvoLoginUser = {
-	idFilial?: number;
-	idFilialCripto?: string;
-	idW12Cripto?: string;
-	idW12?: number;
-	nomeFilial?: string;
-	tokenEvo3?: string;
-	filiais?: unknown[];
-};
-
-type EvoLoginResponse = { chaveOTP?: string; tokenAcesso?: string; usuario?: EvoLoginUser };
 
 const normalizeUnit = (value: string) =>
 	value
@@ -193,15 +181,17 @@ export class EvoSession {
 			gofit: false,
 			idFilial: null
 		};
-		let result = await this.loginStep({ ...base, etapaAtual: 1, chaveOTP: '' });
-		if (!result.tokenAcesso) {
-			if (!result.chaveOTP) throw new Error('etapa 1 do login não devolveu token nem chaveOTP');
+		let next = nextLoginStep(await this.loginStep({ ...base, etapaAtual: 1, chaveOTP: '' }));
+		if (next.kind === 'totp') {
 			if (!this.credentials.segredoTotp) throw new Error('o EVO pede 2FA e não há segredo TOTP salvo');
 			const codigoDuploFator = await codigoTotpFresco(this.credentials.segredoTotp);
-			result = await this.loginStep({ ...base, codigoDuploFator, etapaAtual: 3, chaveOTP: result.chaveOTP });
+			next = nextLoginStep(
+				await this.loginStep({ ...base, codigoDuploFator, etapaAtual: 3, chaveOTP: next.chaveOTP })
+			);
+			if (next.kind === 'totp') throw new Error('o EVO recusou o código 2FA');
 		}
-		const user = result.usuario;
-		if (!result.tokenAcesso || !user?.idFilial) throw new Error('login sem tokenAcesso ou usuário');
+		if (next.kind === 'error') throw new Error(next.message);
+		const { token, user } = next;
 		if (
 			this.unit &&
 			(user.filiais?.length ?? 0) > 1 &&
@@ -212,7 +202,7 @@ export class EvoSession {
 		this.headers = {
 			accept: 'application/json, text/plain, */*',
 			'accept-language': 'pt-BR',
-			authorization: `Bearer ${result.tokenAcesso}`,
+			authorization: `Bearer ${token}`,
 			dns,
 			filial: String(user.idFilial),
 			chaveidfilial: String(user.idFilialCripto ?? ''),
