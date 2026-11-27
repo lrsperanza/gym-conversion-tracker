@@ -5,6 +5,7 @@ export {
 	registrarCancelamento
 } from './cancelamento.ts';
 export {
+	AUTH_URL,
 	DEFAULT_PROSPECT,
 	DEFAULT_UNIDADE,
 	DRAWER,

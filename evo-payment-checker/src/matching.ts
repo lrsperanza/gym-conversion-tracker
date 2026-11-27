@@ -106,11 +106,18 @@ export function sellerTokens(value: string | null | undefined): string[] {
 	return nameTokens((value ?? '').replace(/\bID:\s*\d+\s*$/i, ''));
 }
 
-/** O colaborador do tracker costuma ter só o primeiro nome cadastrado; o primeiro token decide. */
+/**
+ * O colaborador do tracker costuma ter só o primeiro nome cadastrado, às vezes
+ * abreviado ("Helo" ↔ "HELOISE"); o primeiro token decide, aceitando prefixo de
+ * 3+ letras.
+ */
 export function sellerMatches(trackerSeller: string | null | undefined, evoSeller: string | null | undefined): boolean {
-	const a = sellerTokens(trackerSeller);
-	const b = sellerTokens(evoSeller);
-	return a.length > 0 && b.length > 0 && a[0] === b[0];
+	const a = sellerTokens(trackerSeller)[0];
+	const b = sellerTokens(evoSeller)[0];
+	if (!a || !b) return false;
+	if (a === b) return true;
+	const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+	return short.length >= 3 && long.startsWith(short);
 }
 
 export function reportBuyerName(row: EvoReportRow): string {

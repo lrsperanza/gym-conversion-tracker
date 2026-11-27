@@ -1,6 +1,6 @@
 import type { Page } from 'puppeteer-core';
 import { checarCancelamento } from './cancelamento.ts';
-import { LOGIN_URL, SELECTORS, type Prospect } from './config.ts';
+import { AUTH_URL, LOGIN_URL, SELECTORS, type Prospect } from './config.ts';
 import {
   aviso,
   click,
@@ -334,17 +334,32 @@ async function detectarEstadoSessao(page: Page, timeout: number): Promise<Estado
 	const deadline = Date.now() + timeout;
 	const limiteLogin = Date.now() + Math.min(GRACA_SESSAO_MS, timeout);
 	const avisar = aviso('o EVO terminar de carregar');
+	let abriuLogin = false;
 	do {
 		checarCancelamento(page);
 		if (await visivel(page, SELECTORS.unidade.modal)) return 'unidade';
 		if (await visivel(page, SELECTORS.sessaoAtiva)) return 'ativa';
 		if (await telaTotpVisivel(page)) return 'totp';
-		if (Date.now() > limiteLogin && (await visivel(page, SELECTORS.login.usuario))) return 'login';
+		if (Date.now() > limiteLogin) {
+			if (await visivel(page, SELECTORS.login.usuario)) return 'login';
+			// Sem token guardado, a área logada fica só na casca (menu e topo, sem
+			// conteúdo) e não leva mais ao login sozinha: abrimos a tela de login.
+			if (!abriuLogin && !(await temTokenGuardado(page))) {
+				abriuLogin = true;
+				log(`sem sessão guardada — abrindo ${AUTH_URL}`);
+				await gotoComRetry(page, AUTH_URL, remaining(deadline));
+				continue;
+			}
+		}
 		avisar();
 		await sleep(POLL_INTERVAL);
 	} while (Date.now() < deadline);
 
 	throw new Error('Não foi possível identificar o estado da sessão no EVO.');
+}
+
+async function temTokenGuardado(page: Page): Promise<boolean> {
+	return page.evaluate(() => Boolean(localStorage.getItem('evo.authToken'))).catch(() => true);
 }
 
 async function aguardarSessaoAtiva(page: Page, timeout: number): Promise<void> {

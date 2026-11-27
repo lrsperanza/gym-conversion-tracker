@@ -261,6 +261,27 @@ export type DashboardSummary = {
 	}>;
 	payments: Record<SalePaymentStatus, { sales: number; amount_cents: number }>;
 	timeline: MetricRow[];
+	/** Saúde da conferência noturna com o EVO; `ok: false` = receita/rankings incompletos. */
+	sync?: SyncHealth;
+};
+
+export type SyncHealth = {
+	ok: boolean;
+	problems: string[];
+	warnings: string[];
+	lastRun: {
+		started_at: string;
+		finished_at: string | null;
+		status: 'RUNNING' | 'OK' | 'PARTIAL' | 'FAILED';
+		sales_to_check: number;
+		paid: number;
+		errors: number;
+		failed_units: number;
+		login_method: string | null;
+		message: string | null;
+	} | null;
+	lastSuccessAt: string | null;
+	overdue: { sales: number; amount_cents: number; oldest: string | null };
 };
 
 export type MetricRow = {

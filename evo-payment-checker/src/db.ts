@@ -158,6 +158,58 @@ export async function saveSaleCheck(saleId: string, update: SaleUpdate): Promise
 	`);
 }
 
+export type RunStatus = 'OK' | 'PARTIAL' | 'FAILED';
+
+export type RunResult = {
+	status: RunStatus;
+	salesToCheck: number;
+	paid: number;
+	pending: number;
+	notPaid: number;
+	errors: number;
+	failedUnits: number;
+	loginMethod: string | null;
+	message: string | null;
+};
+
+/**
+ * Registra o início da execução em `payment_check_runs` (lido pelo dashboard).
+ * Falhar aqui não pode impedir a conferência: devolve null e segue.
+ */
+export async function startRun(): Promise<string | null> {
+	try {
+		const [row] = await withConflictRetry(() => sql<Array<{ id: string }>>`
+			INSERT INTO "gym-conversion-tracker"."payment_check_runs" ("status") VALUES ('RUNNING') RETURNING "id"
+		`);
+		return row?.id ?? null;
+	} catch (error) {
+		console.warn('[check] não foi possível registrar o início da execução:', error);
+		return null;
+	}
+}
+
+export async function finishRun(runId: string | null, result: RunResult): Promise<void> {
+	if (!runId) return;
+	try {
+		await withConflictRetry(() => sql`
+			UPDATE "gym-conversion-tracker"."payment_check_runs"
+			SET "finished_at" = now(),
+				"status" = ${result.status},
+				"sales_to_check" = ${result.salesToCheck},
+				"paid" = ${result.paid},
+				"pending" = ${result.pending},
+				"not_paid" = ${result.notPaid},
+				"errors" = ${result.errors},
+				"failed_units" = ${result.failedUnits},
+				"login_method" = ${result.loginMethod},
+				"message" = ${result.message?.slice(0, 2000) ?? null}
+			WHERE "id" = ${runId}
+		`);
+	} catch (error) {
+		console.warn('[check] não foi possível registrar o fim da execução:', error);
+	}
+}
+
 export async function closeDb(): Promise<void> {
 	await sql.end({ timeout: 5 });
 }

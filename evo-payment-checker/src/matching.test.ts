@@ -177,6 +177,13 @@ describe('relatório Gerencial › Vendas', () => {
 		expect(sellerMatches('Heloise', 'ANDRE ALVES DOS SANTOS ID: 14501')).toBe(false);
 	});
 
+	test('colaborador com apelido abreviado casa por prefixo', () => {
+		expect(sellerMatches('Helo Francelino', 'HELOISE FRANCELINO ID: 14500')).toBe(true);
+		expect(sellerMatches('Júlia Romancini', 'JULIA VITORIA ROMANCINI NETO ID: 14481')).toBe(true);
+		expect(sellerMatches('Jo', 'JOAO SILVA ID: 1')).toBe(false);
+		expect(sellerMatches('Helo', 'JULIA VITORIA ROMANCINI NETO ID: 14481')).toBe(false);
+	});
+
 	test('nome completo do lead dentro de nome + apelido do comprador', () => {
 		const lead = { name: 'Lindair', surname: 'Matsumoto', cpf: null, email: null, whatsapp: null };
 		expect(ids(reportCandidates(lead, sale, [row({})], windowStart))).toEqual([3959025]);
